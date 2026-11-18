@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "documents": [
+    {
+      "id": "patent-us10063856b2",
+      "kind": "patent",
+      "family": "US10063856",
+      "title": "Chroma Quantization Parameter Extension",
+      "edition": "US 10,063,856 B2 (2018-08-28)",
+      "filename": "US10063856.pdf",
+      "sha256": "9df9504f3dc4362e0d3f799c08ec04d321a5da33800313ea93dd0c7fa7dfc0d1",
+      "status": "available"
+    },
+    {
+      "id": "standard-g7222-2003",
+      "kind": "standard",
+      "family": "G.722.2",
+      "title": "Wideband coding of speech at around 16 kbit/s using Adaptive Multi-Rate Wideband",
+      "edition": "ITU-T G.722.2 (07/2003)",
+      "filename": "T-REC-G.722.2-200307-I.pdf",
+      "sha256": "3b1092f16c14d6d1965c1c30843926828499f6c26b74a30ace4dcb996be61bf2",
+      "status": "available"
+    },
+    {
+      "id": "standard-ts136211-v17.2.0",
+      "kind": "standard",
+      "family": "TS 136 211",
+      "title": "E-UTRA Physical channels and modulation",
+      "edition": "3GPP TS 36.211 V17.2.0 (2022-08)",
+      "filename": "ts_136211v170200p.pdf",
+      "sha256": "29108667f13dab1877aae17ddacc922c5eb03667cbd0354ba294ad2e29d02e27",
+      "status": "available"
+    },
+    {
+      "id": "standard-h265-v10",
+      "kind": "standard",
+      "family": "H.265",
+      "title": "High efficiency video coding",
+      "edition": "ITU-T H.265 V10 (07/2024)",
+      "filename": "T-REC-H.265-202407-I.pdf",
+      "sha256": "d61a67af3ad1fba39a6b6910ff81f78a214871df41f76e94a96b7ca941c61222",
+      "status": "available"
+    }
+  ]
+}

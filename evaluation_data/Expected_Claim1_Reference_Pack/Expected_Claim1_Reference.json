@@ -1,0 +1,483 @@
+{
+  "dataset_id": "expected-claim1-v1",
+  "version": "1.0.0",
+  "status": "Provisional technical reference; no SEP expert/attorney sign-off",
+  "provisional": true,
+  "expert_signoff": false,
+  "patent": {
+    "id": "US10063856B2",
+    "document_id": "patent-us10063856b2",
+    "claim_number": 1,
+    "claim_scope": "Granted claim 1"
+  },
+  "recommended_target": {
+    "family": "H.265",
+    "edition": "ITU-T H.265 V10 (07/2024)",
+    "document_id": "standard-h265-v10",
+    "document_edition_label": "ITU-T H.265 (V10) (07/2024)",
+    "sha256": "d61a67af3ad1fba39a6b6910ff81f78a214871df41f76e94a96b7ca941c61222"
+  },
+  "label_policy": "Conditional/contextual support; full requirements not established. All three baseline rows are Partial map.",
+  "class_distribution": {
+    "Full map": 0,
+    "Partial map": 3,
+    "No map": 0
+  },
+  "baselines": {
+    "always_partial_label_agreement": "3/3",
+    "full_map_precision_recall": "Not estimable: no adjudicated positive Full examples"
+  },
+  "companions": {
+    "workbook": "Expected_Claim1_Evaluation.xlsx",
+    "pdf_chart": "Expected_Claim1_Chart.pdf"
+  },
+  "criteria": [
+    {
+      "id": "C01",
+      "key": "right_standard",
+      "name": "Right standard",
+      "pass_condition": "Every evidence block uses the intended standard and exact edition; recommendation selects the appropriate candidate"
+    },
+    {
+      "id": "C02",
+      "key": "quote_verbatim",
+      "name": "Quote real and verbatim",
+      "pass_condition": "Every displayed quote is found in its original source; only documented layout normalization is allowed"
+    },
+    {
+      "id": "C03",
+      "key": "source_page",
+      "name": "Source and page correct",
+      "pass_condition": "File identity, section, 1-based PDF page and printed page correspond to the passage"
+    },
+    {
+      "id": "C04",
+      "key": "screenshot_match",
+      "name": "Screenshot matches quote",
+      "pass_condition": "Original-source crop contains the cited passage with enough surrounding context"
+    },
+    {
+      "id": "C05",
+      "key": "rationale_supports",
+      "name": "Rationale supports element",
+      "pass_condition": "Explains each requirement, actual support, unresolved gaps and conditions"
+    },
+    {
+      "id": "C06",
+      "key": "label_correct",
+      "name": "Full / Partial / No correct",
+      "pass_condition": "Label follows the agreed policy for the complete aligned element"
+    }
+  ],
+  "rows": [
+    {
+      "id": "1[a]",
+      "label": "1[a]",
+      "exact_text": "An encoding apparatus, comprising: circuitry configured to:",
+      "mapping_label": "Partial map",
+      "rationale": "E01 defines an encoder as an embodiment of an encoding process, so the encoding context has partial support. E01 and E02 explicitly leave encoding algorithms/processes unspecified. Neither passage establishes circuitry configured to perform the combined operations in 1[b] and 1[c]. Under the stated partial-support policy, this is Partial map, not Full map. Preserve the apparatus and circuitry restriction when comparing alternative claim splits.",
+      "gaps": [
+        "Mandatory circuitry implementation",
+        "Circuitry configured for both following operations"
+      ],
+      "limitations": "Expert review of apparatus/functional construction is required; not a legal essentiality opinion.",
+      "evidence_ids": [
+        "E01",
+        "E02"
+      ],
+      "evidence_blocks": [
+        {
+          "evidence_id": "E01",
+          "document_edition": "ITU-T H.265 (V10) (07/2024)",
+          "section": "3.53-3.54",
+          "printed_page": 7,
+          "pdf_page": 25,
+          "quote": "3.53 encoder: An embodiment of an encoding process. 3.54 encoding process: A process not specified in this Specification that produces a bitstream conforming to this Specification.",
+          "screenshot_file": "evidence/E01.png"
+        },
+        {
+          "evidence_id": "E02",
+          "document_edition": "ITU-T H.265 (V10) (07/2024)",
+          "section": "0.7",
+          "printed_page": 3,
+          "pdf_page": 21,
+          "quote": "Encoding algorithms (not specified in this Recommendation | International Standard) may select between inter and intra coding for block-shaped regions of each picture.",
+          "screenshot_file": "evidence/E02.png"
+        }
+      ]
+    },
+    {
+      "id": "1[b]",
+      "label": "1[b]",
+      "exact_text": "set a chroma quantization parameter (QP) included in a chroma QP range from 0 to 51 equal to a luma QP range, based on a parameter including a picture level chroma QP offset added to a luma QP; and",
+      "mapping_label": "Partial map",
+      "rationale": "E03 identifies PPS chroma offsets. E04 equations (8-285)/(8-286) add pps_cb_qp_offset/pps_cr_qp_offset to QpY with slice/CU offsets; other branches use ACT offsets. The input qPi is clipped to 57, not itself the claimed final chroma QP. For ChromaArrayType=1, Table 8-10 maps qPi>43 to qPi-6: qPi=57 therefore yields QpC=51, not 39. The other chroma-format branch uses Min(qPi,51). E04 then adds QpBdOffsetC to obtain Qp-prime Cb/Cr; E05 makes this offset bit-depth dependent. With eight-bit luma/chroma, no ACT and suitable offsets, the numeric mechanism is compatible with a 0-51 range. However, this is conditional decoding derivation, not a direct requirement on the encoder circuitry in 1[a]. Do not assert that the 0-51 mechanism is absent, or conflate qPi, QpC and Qp-prime C. Partial map is the conservative whole-element reference label.",
+      "gaps": [
+        "Explicit mapping from claimed QP to standard variables",
+        "Mode/chroma-format/bit-depth applicability",
+        "Requirement for the claimed encoder circuitry\n\nExpert adjudication needed for variable identity, relevant implementation scope and whether normative decoder behavior suffices for the claimed encoder."
+      ],
+      "limitations": null,
+      "evidence_ids": [
+        "E03",
+        "E04",
+        "E05"
+      ],
+      "evidence_blocks": [
+        {
+          "evidence_id": "E03",
+          "document_edition": "ITU-T H.265 (V10) (07/2024)",
+          "section": "7.4.3.3.1",
+          "printed_page": 83,
+          "pdf_page": 101,
+          "quote": "pps_cb_qp_offset and pps_cr_qp_offset specify the offsets to the luma quantization parameter Qp′Y used for deriving Qp′Cb and Qp′Cr, respectively. The values of pps_cb_qp_offset and pps_cr_qp_offset shall be in the range of −12 to +12, inclusive. When ChromaArrayType is equal to 0, pps_cb_qp_offset and pps_cr_qp_offset are not used in the decoding process and decoders shall ignore their value.",
+          "screenshot_file": "evidence/E03.png"
+        },
+        {
+          "evidence_id": "E04",
+          "document_edition": "ITU-T H.265 (V10) (07/2024)",
+          "section": "8.6.1, equations 8-285 to 8-290 and Table 8-10",
+          "printed_page": 176,
+          "pdf_page": 194,
+          "quote": "When ChromaArrayType is not equal to 0, the following applies: – The variables qPCb and qPCr are derived as follows: – If tu_residual_act_flag[ xTbY ][ yTbY ] is equal to 0, the following applies: qPiCb = Clip3( −QpBdOffsetC, 57, QpY + pps_cb_qp_offset + slice_cb_qp_offset + CuQpOffsetCb ) (8-285) qPiCr = Clip3( −QpBdOffsetC, 57, QpY + pps_cr_qp_offset + slice_cr_qp_offset + CuQpOffsetCr ) (8-286) – Otherwise (tu_residual_act_flag[ xTbY ][ yTbY ] is equal to 1), the following applies: qPiCb = Clip3( −QpBdOffsetC, 57, QpY + PpsActQpOffsetCb + slice_act_cb_qp_offset + CuQpOffsetCb ) (8-287) qPiCr = Clip3( −QpBdOffsetC, 57, QpY + PpsActQpOffsetCr + slice_act_cr_qp_offset + CuQpOffsetCr ) (8-288) – If ChromaArrayType is equal to 1, the variables qPCb and qPCr are set equal to the value of QpC as specified in Table 8-10 based on the index qPi equal to qPiCb and qPiCr, respectively. – Otherwise, the variables qPCb and qPCr are set equal to Min( qPi, 51 ), based on the index qPi equal to qPiCb and qPiCr, respectively. – The chroma quantization parameters for the Cb and Cr components, Qp′Cb and Qp′Cr, are derived as follows: Qp′Cb = qPCb + QpBdOffsetC (8-289) Qp′Cr = qPCr + QpBdOffsetC (8-290) Table 8-10 – Specification of QpC as a function of qPi for ChromaArrayType equal to 1 qPi < 30 30 31 32 33 34 35 36 37 38 39 40 41 42 43 > 43 QpC = qPi 29 30 31 32 33 33 34 34 35 35 36 36 37 37 = qPi − 6",
+          "screenshot_file": "evidence/E04.png"
+        },
+        {
+          "evidence_id": "E05",
+          "document_edition": "ITU-T H.265 (V10) (07/2024)",
+          "section": "7.4.3.2.1, equations 7-4 to 7-7",
+          "printed_page": 76,
+          "pdf_page": 94,
+          "quote": "bit_depth_luma_minus8 specifies the bit depth of the samples of the luma array BitDepthY and the value of the luma quantization parameter range offset QpBdOffsetY as follows: BitDepthY = 8 + bit_depth_luma_minus8 (7-4) QpBdOffsetY = 6 * bit_depth_luma_minus8 (7-5) bit_depth_luma_minus8 shall be in the range of 0 to 8, inclusive. bit_depth_chroma_minus8 specifies the bit depth of the samples of the chroma arrays BitDepthC and the value of the chroma quantization parameter range offset QpBdOffsetC as follows: BitDepthC = 8 + bit_depth_chroma_minus8 (7-6) QpBdOffsetC = 6 * bit_depth_chroma_minus8 (7-7) bit_depth_chroma_minus8 shall be in the range of 0 to 8, inclusive.",
+          "screenshot_file": "evidence/E05.png"
+        }
+      ]
+    },
+    {
+      "id": "1[c]",
+      "label": "1[c]",
+      "exact_text": "quantize transform data that is orthogonal-transformed from a picture, based on the set chroma QP to generate quantized data.",
+      "mapping_label": "Partial map",
+      "rationale": "E06 describes prediction residual transformed before quantization, providing genuine partial functional support. Its language is permissive introductory context. E07 shows how chroma QPs are used in decoding scaling/transformation; this must not be mislabeled as forward encoder quantization. The cited bundle does not establish the specified orthogonal transform, a mandatory encoder quantization step using the particular QP from 1[b], and the claimed circuitry. Because E06 describes part of the operation, Partial map is used rather than treating every related decoding passage as either Full support or proof of absence.",
+      "gaps": [
+        "Orthogonal-transformed input as claimed",
+        "Forward quantization using the exact QP set in 1[b]",
+        "Mandatory encoder implementation"
+      ],
+      "limitations": "Expert review required for transform construction and any implementation inference beyond standard text.",
+      "evidence_ids": [
+        "E06",
+        "E07",
+        "E01"
+      ],
+      "evidence_blocks": [
+        {
+          "evidence_id": "E06",
+          "document_edition": "ITU-T H.265 (V10) (07/2024)",
+          "section": "0.7",
+          "printed_page": 3,
+          "pdf_page": 21,
+          "quote": "The prediction residual may then be further compressed using a transform to remove spatial correlation inside the transform block before it is quantized, producing a possibly irreversible process that typically discards less important visual information while forming a close approximation to the source samples. Finally, the motion vectors or intra prediction modes may also be further compressed using a variety of prediction mechanisms, and, after prediction, are combined with the quantized transform coefficient information and encoded using arithmetic coding.",
+          "screenshot_file": "evidence/E06.png"
+        },
+        {
+          "evidence_id": "E07",
+          "document_edition": "ITU-T H.265 (V10) (07/2024)",
+          "section": "8.6.2, equations 8-292 and 8-293",
+          "printed_page": 177,
+          "pdf_page": 195,
+          "quote": "Otherwise, if cIdx is equal to 1, the following applies: qP = Qp′Cb (8-292) – Otherwise (cIdx is equal to 2), the following applies: qP = Qp′Cr (8-293)",
+          "screenshot_file": "evidence/E07.png"
+        },
+        {
+          "evidence_id": "E01",
+          "document_edition": "ITU-T H.265 (V10) (07/2024)",
+          "section": "3.53-3.54",
+          "printed_page": 7,
+          "pdf_page": 25,
+          "quote": "3.53 encoder: An embodiment of an encoding process. 3.54 encoding process: A process not specified in this Specification that produces a bitstream conforming to this Specification.",
+          "screenshot_file": "evidence/E01.png"
+        }
+      ]
+    }
+  ],
+  "requirements": [
+    {
+      "id": "R01",
+      "element_label": "1[a]",
+      "text": "Encoding apparatus",
+      "reference_coverage": "Partial contextual support",
+      "evidence_ids": [
+        "E01",
+        "E02"
+      ],
+      "scoring_caution": "Do not discard preamble/circuitry by splitting."
+    },
+    {
+      "id": "R02",
+      "element_label": "1[a]",
+      "text": "Circuitry configured for both operations",
+      "reference_coverage": "Not established",
+      "evidence_ids": [
+        "E01"
+      ],
+      "scoring_caution": "A standard process is not a specific mandatory hardware implementation."
+    },
+    {
+      "id": "R03",
+      "element_label": "1[b]",
+      "text": "Set chroma QP in 0-51 range equal to luma QP range",
+      "reference_coverage": "Conditionally supported",
+      "evidence_ids": [
+        "E04",
+        "E05"
+      ],
+      "scoring_caution": "State QP variable identity and eight-bit/mode restrictions; qPi upper 57 is not the output bound."
+    },
+    {
+      "id": "R04",
+      "element_label": "1[b]",
+      "text": "Parameter includes picture-level chroma offset added to luma QP",
+      "reference_coverage": "Direct mechanism under conditions",
+      "evidence_ids": [
+        "E03",
+        "E04"
+      ],
+      "scoring_caution": "Do not omit slice/CU offsets or ACT branch; extra terms do not alone negate the word including."
+    },
+    {
+      "id": "R05",
+      "element_label": "1[c]",
+      "text": "Quantize transformed picture data",
+      "reference_coverage": "Contextually supported",
+      "evidence_ids": [
+        "E06"
+      ],
+      "scoring_caution": "Overview is permissive, not a required encoder algorithm."
+    },
+    {
+      "id": "R06",
+      "element_label": "1[c]",
+      "text": "Transform is orthogonal",
+      "reference_coverage": "Not established by selected bundle",
+      "evidence_ids": [
+        "E06",
+        "E07"
+      ],
+      "scoring_caution": "Do not infer orthogonality from the generic word transform."
+    },
+    {
+      "id": "R07",
+      "element_label": "1[c]",
+      "text": "Use the set chroma QP from preceding limitation",
+      "reference_coverage": "Decoder-side use only",
+      "evidence_ids": [
+        "E04",
+        "E07"
+      ],
+      "scoring_caution": "Need explicit bridge to claimed forward operation."
+    }
+  ],
+  "target_selection_controls": [
+    {
+      "id": "S01",
+      "standard_edition": "ITU-T H.265 (V10) (07/2024)",
+      "expected_selection": "Recommended target",
+      "reason": "High-efficiency video coding with specific chroma-QP derivation and PPS offset machinery. Target relevance does not establish full claim essentiality.",
+      "evidence_ids": [
+        "E10",
+        "E03",
+        "E04"
+      ],
+      "source_url": "https://www.itu.int/rec/T-REC-H.265-202407-S"
+    },
+    {
+      "id": "S02",
+      "standard_edition": "ITU-T G.722.2 (07/2003)",
+      "expected_selection": "Not recommended",
+      "reason": "AMR-WB speech/ACELP coding; no evidence established for the complete video-picture chroma-QP/orthogonal-transform combination. Generic coding or quantization terms alone do not satisfy the compound claim.",
+      "evidence_ids": [
+        "E08"
+      ],
+      "source_url": "https://www.itu.int/rec/T-REC-G.722.2-200307-I/en"
+    },
+    {
+      "id": "S03",
+      "standard_edition": "ETSI TS 136 211 V17.2.0 (2022-08)",
+      "expected_selection": "Not recommended",
+      "reason": "LTE/E-UTRA physical-channel specification, not the claimed video chroma-QP mechanism. A radio transform/modulation or generic coding match is not sufficient.",
+      "evidence_ids": [
+        "E09"
+      ],
+      "source_url": "https://www.etsi.org/deliver/etsi_ts/136200_136299/136211/17.02.00_60/ts_136211v170200p.pdf"
+    }
+  ],
+  "evidence": {
+    "E01": {
+      "id": "E01",
+      "document_edition": "ITU-T H.265 (V10) (07/2024)",
+      "section": "3.53-3.54",
+      "printed_page": 7,
+      "pdf_page": 25,
+      "quote": "3.53 encoder: An embodiment of an encoding process. 3.54 encoding process: A process not specified in this Specification that produces a bitstream conforming to this Specification.",
+      "role_interpretation": "Definition / scope limit\nAn encoder is recognized, but the encoding process is explicitly not specified. Does not require a particular circuitry implementation.",
+      "screenshot_file": "evidence/E01.png",
+      "source_url": "https://www.itu.int/rec/T-REC-H.265-202407-S",
+      "source_sha256": "d61a67af3ad1fba39a6b6910ff81f78a214871df41f76e94a96b7ca941c61222",
+      "screenshot_present": true,
+      "screenshot_sha256": "9c0141705e404af424b1a22279ca86b0c5f076cdba8f0a16c6564480104e6514"
+    },
+    "E02": {
+      "id": "E02",
+      "document_edition": "ITU-T H.265 (V10) (07/2024)",
+      "section": "0.7",
+      "printed_page": 3,
+      "pdf_page": 21,
+      "quote": "Encoding algorithms (not specified in this Recommendation | International Standard) may select between inter and intra coding for block-shaped regions of each picture.",
+      "role_interpretation": "Contextual encoder discussion\nThis is the introductory design overview, not a normative encoder algorithm requirement.",
+      "screenshot_file": "evidence/E02.png",
+      "source_url": "https://www.itu.int/rec/T-REC-H.265-202407-S",
+      "source_sha256": "d61a67af3ad1fba39a6b6910ff81f78a214871df41f76e94a96b7ca941c61222",
+      "screenshot_present": true,
+      "screenshot_sha256": "3bc1f0b6e3c68c1d9693b7902059743e6de47dd6f427f7d807e021165af581c5"
+    },
+    "E03": {
+      "id": "E03",
+      "document_edition": "ITU-T H.265 (V10) (07/2024)",
+      "section": "7.4.3.3.1",
+      "printed_page": 83,
+      "pdf_page": 101,
+      "quote": "pps_cb_qp_offset and pps_cr_qp_offset specify the offsets to the luma quantization parameter Qp′Y used for deriving Qp′Cb and Qp′Cr, respectively. The values of pps_cb_qp_offset and pps_cr_qp_offset shall be in the range of −12 to +12, inclusive. When ChromaArrayType is equal to 0, pps_cb_qp_offset and pps_cr_qp_offset are not used in the decoding process and decoders shall ignore their value.",
+      "role_interpretation": "Conditional normative syntax semantics\nPicture-level offset semantics; range -12 to +12; ignored when ChromaArrayType=0.",
+      "screenshot_file": "evidence/E03.png",
+      "source_url": "https://www.itu.int/rec/T-REC-H.265-202407-S",
+      "source_sha256": "d61a67af3ad1fba39a6b6910ff81f78a214871df41f76e94a96b7ca941c61222",
+      "screenshot_present": true,
+      "screenshot_sha256": "5ad520b8b377c1b5a0044da2822e940e437676887b5fa6c13181f8500e82db9b"
+    },
+    "E04": {
+      "id": "E04",
+      "document_edition": "ITU-T H.265 (V10) (07/2024)",
+      "section": "8.6.1, equations 8-285 to 8-290 and Table 8-10",
+      "printed_page": 176,
+      "pdf_page": 194,
+      "quote": "When ChromaArrayType is not equal to 0, the following applies: – The variables qPCb and qPCr are derived as follows: – If tu_residual_act_flag[ xTbY ][ yTbY ] is equal to 0, the following applies: qPiCb = Clip3( −QpBdOffsetC, 57, QpY + pps_cb_qp_offset + slice_cb_qp_offset + CuQpOffsetCb ) (8-285) qPiCr = Clip3( −QpBdOffsetC, 57, QpY + pps_cr_qp_offset + slice_cr_qp_offset + CuQpOffsetCr ) (8-286) – Otherwise (tu_residual_act_flag[ xTbY ][ yTbY ] is equal to 1), the following applies: qPiCb = Clip3( −QpBdOffsetC, 57, QpY + PpsActQpOffsetCb + slice_act_cb_qp_offset + CuQpOffsetCb ) (8-287) qPiCr = Clip3( −QpBdOffsetC, 57, QpY + PpsActQpOffsetCr + slice_act_cr_qp_offset + CuQpOffsetCr ) (8-288) – If ChromaArrayType is equal to 1, the variables qPCb and qPCr are set equal to the value of QpC as specified in Table 8-10 based on the index qPi equal to qPiCb and qPiCr, respectively. – Otherwise, the variables qPCb and qPCr are set equal to Min( qPi, 51 ), based on the index qPi equal to qPiCb and qPiCr, respectively. – The chroma quantization parameters for the Cb and Cr components, Qp′Cb and Qp′Cr, are derived as follows: Qp′Cb = qPCb + QpBdOffsetC (8-289) Qp′Cr = qPCr + QpBdOffsetC (8-290) Table 8-10 – Specification of QpC as a function of qPi for ChromaArrayType equal to 1 qPi < 30 30 31 32 33 34 35 36 37 38 39 40 41 42 43 > 43 QpC = qPi 29 30 31 32 33 33 34 34 35 35 36 36 37 37 = qPi − 6",
+      "role_interpretation": "Conditional normative decoding derivation\nIncludes both ACT branches, chroma-format branches, offset addition, qPi clipping, table and bit-depth-adjusted QPs. End marker 8.6.2 is a locator, not supporting text.",
+      "screenshot_file": "evidence/E04.png",
+      "source_url": "https://www.itu.int/rec/T-REC-H.265-202407-S",
+      "source_sha256": "d61a67af3ad1fba39a6b6910ff81f78a214871df41f76e94a96b7ca941c61222",
+      "screenshot_present": true,
+      "screenshot_sha256": "e5138efd8f115abddb16ebb176aba7629c437ed5963e7592667c798f1bfae20b"
+    },
+    "E05": {
+      "id": "E05",
+      "document_edition": "ITU-T H.265 (V10) (07/2024)",
+      "section": "7.4.3.2.1, equations 7-4 to 7-7",
+      "printed_page": 76,
+      "pdf_page": 94,
+      "quote": "bit_depth_luma_minus8 specifies the bit depth of the samples of the luma array BitDepthY and the value of the luma quantization parameter range offset QpBdOffsetY as follows: BitDepthY = 8 + bit_depth_luma_minus8 (7-4) QpBdOffsetY = 6 * bit_depth_luma_minus8 (7-5) bit_depth_luma_minus8 shall be in the range of 0 to 8, inclusive. bit_depth_chroma_minus8 specifies the bit depth of the samples of the chroma arrays BitDepthC and the value of the chroma quantization parameter range offset QpBdOffsetC as follows: BitDepthC = 8 + bit_depth_chroma_minus8 (7-6) QpBdOffsetC = 6 * bit_depth_chroma_minus8 (7-7) bit_depth_chroma_minus8 shall be in the range of 0 to 8, inclusive.",
+      "role_interpretation": "Conditional normative bit-depth semantics\nExplains QpBdOffsetY/C. In particular 8-bit chroma gives offset 0; 10-bit gives 12.",
+      "screenshot_file": "evidence/E05.png",
+      "source_url": "https://www.itu.int/rec/T-REC-H.265-202407-S",
+      "source_sha256": "d61a67af3ad1fba39a6b6910ff81f78a214871df41f76e94a96b7ca941c61222",
+      "screenshot_present": true,
+      "screenshot_sha256": "e43a282b78b1c5fb27f7907bf68da7a52c4d584b7cd9514195afd6a0b0bda771"
+    },
+    "E06": {
+      "id": "E06",
+      "document_edition": "ITU-T H.265 (V10) (07/2024)",
+      "section": "0.7",
+      "printed_page": 3,
+      "pdf_page": 21,
+      "quote": "The prediction residual may then be further compressed using a transform to remove spatial correlation inside the transform block before it is quantized, producing a possibly irreversible process that typically discards less important visual information while forming a close approximation to the source samples. Finally, the motion vectors or intra prediction modes may also be further compressed using a variety of prediction mechanisms, and, after prediction, are combined with the quantized transform coefficient information and encoded using arithmetic coding.",
+      "role_interpretation": "Contextual forward transform/quantization\nDescribes a possible transform-then-quantize route. Does not mandate orthogonality, particular circuitry or use of the claimed QP derivation.",
+      "screenshot_file": "evidence/E06.png",
+      "source_url": "https://www.itu.int/rec/T-REC-H.265-202407-S",
+      "source_sha256": "d61a67af3ad1fba39a6b6910ff81f78a214871df41f76e94a96b7ca941c61222",
+      "screenshot_present": true,
+      "screenshot_sha256": "d5cb4c724d70a14c48ebb205117ba5ae724048ef9cf63a995c9ab37898787ea8"
+    },
+    "E07": {
+      "id": "E07",
+      "document_edition": "ITU-T H.265 (V10) (07/2024)",
+      "section": "8.6.2, equations 8-292 and 8-293",
+      "printed_page": 177,
+      "pdf_page": 195,
+      "quote": "Otherwise, if cIdx is equal to 1, the following applies: qP = Qp′Cb (8-292) – Otherwise (cIdx is equal to 2), the following applies: qP = Qp′Cr (8-293)",
+      "role_interpretation": "Conditional normative decoding QP use\nqP is selected from Qp-prime Cb/Cr, but this is the decoding scaling/transformation process, not proof of forward encoder quantization.",
+      "screenshot_file": "evidence/E07.png",
+      "source_url": "https://www.itu.int/rec/T-REC-H.265-202407-S",
+      "source_sha256": "d61a67af3ad1fba39a6b6910ff81f78a214871df41f76e94a96b7ca941c61222",
+      "screenshot_present": true,
+      "screenshot_sha256": "cc84ded180ae050afbdc82731801b1d79c2570796525bec6592521b0c175a81f"
+    },
+    "E08": {
+      "id": "E08",
+      "document_edition": "ITU-T G.722.2 (07/2003)",
+      "section": "1 Scope",
+      "printed_page": 1,
+      "pdf_page": 7,
+      "quote": "This Recommendation describes the detailed mapping from input blocks of 320 speech samples in 16-bit uniform PCM format to encoded blocks of 132, 177, 253, 285, 317, 365, 397, 461 and 477 bits and from encoded blocks of 132, 177, 253, 285, 317, 365, 397, 461 and 477 bits to output blocks of 320 reconstructed speech samples. The sampling rate is 16 000 samples/s leading to a bit rate for the encoded bit stream of 6.60, 8.85, 12.65, 14.25, 15.85, 18.25, 19.85, 23.05 or 23.85 kbit/s. The coding scheme for the multi-rate coding modes is the so-called Algebraic Code Excited Linear Prediction Coder, hereafter referred to as ACELP.",
+      "role_interpretation": "Scope / rejected target context\nAudio speech sample coding, not evidence for the complete video chroma-QP claim.",
+      "screenshot_file": "evidence/E08.png",
+      "source_url": "https://www.itu.int/rec/T-REC-G.722.2-200307-I/en",
+      "source_sha256": "3b1092f16c14d6d1965c1c30843926828499f6c26b74a30ace4dcb996be61bf2",
+      "screenshot_present": false
+    },
+    "E09": {
+      "id": "E09",
+      "document_edition": "ETSI TS 136 211 V17.2.0 (2022-08)",
+      "section": "1 Scope",
+      "printed_page": 10,
+      "pdf_page": 11,
+      "quote": "The present document describes the physical channels for evolved UTRA.",
+      "role_interpretation": "Scope / rejected target context\nPhysical radio channels; does not establish the compound video chroma-QP requirements.",
+      "screenshot_file": "evidence/E09.png",
+      "source_url": "https://www.etsi.org/deliver/etsi_ts/136200_136299/136211/17.02.00_60/ts_136211v170200p.pdf",
+      "source_sha256": "29108667f13dab1877aae17ddacc922c5eb03667cbd0354ba294ad2e29d02e27",
+      "screenshot_present": false
+    },
+    "E10": {
+      "id": "E10",
+      "document_edition": "ITU-T H.265 (V10) (07/2024)",
+      "section": "1 Scope",
+      "printed_page": 3,
+      "pdf_page": 21,
+      "quote": "This Recommendation | International Standard specifies high efficiency video coding.",
+      "role_interpretation": "Target selection scope\nCorrect video standard among the supplied documents.",
+      "screenshot_file": "evidence/E10.png",
+      "source_url": "https://www.itu.int/rec/T-REC-H.265-202407-S",
+      "source_sha256": "d61a67af3ad1fba39a6b6910ff81f78a214871df41f76e94a96b7ca941c61222",
+      "screenshot_present": false
+    }
+  },
+  "exclusions": [
+    "Other claims: Reference not available",
+    "G.722.2 and TS 136 211: selection controls only — not complete row-level charts"
+  ],
+  "policies": [
+    "All three baseline rows are Partial; do not manufacture Full/No examples for balance.",
+    "Target-selection negatives are not complete row-level charts for G.722.2/LTE.",
+    "Alternative valid citations are acceptable; expected evidence IDs are anchors, not an exhaustive whitelist.",
+    "Align claim requirements when segmentation differs; do not compare labels by row number alone.",
+    "Do not load this reference into the production retrieval corpus, model context or agent prompts.",
+    "No actual agent run or score has been prepopulated in this pack."
+  ],
+  "planned_risk_cases": [
+    {
+      "id": "R-integrity",
+      "title": "Evidence integrity failure",
+      "status": "planned"
+    },
+    {
+      "id": "R-overclaim",
+      "title": "Semantic overclaim",
+      "status": "planned"
+    },
+    {
+      "id": "R-numeric",
+      "title": "Lost condition or numeric branch (Table 8-10 qPi=57→QpC=51)",
+      "status": "planned"
+    }
+  ]
+}

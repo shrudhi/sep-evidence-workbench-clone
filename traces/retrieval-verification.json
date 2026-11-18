@@ -1,0 +1,61 @@
+{
+  "trace_type": "retrieval_verification",
+  "created_at": "2026-11-16T20:57:28.201288+00:00",
+  "claim": "Genuine local retrieval/API verification; not a model mapping run.",
+  "query": "chroma quantization parameter picture level offset",
+  "document_scope": [
+    "standard-g7222-2003",
+    "standard-ts136211-v17.2.0"
+  ],
+  "result_span_ids": [
+    "span:standard-g7222-2003:25:0:74f60224f0",
+    "span:standard-g7222-2003:26:2:d8a0cdca91",
+    "span:standard-g7222-2003:42:0:32cd5aa09b",
+    "span:standard-g7222-2003:14:1:49e0d28471",
+    "span:standard-g7222-2003:25:1:31174fe0fe"
+  ],
+  "result_documents": [
+    "standard-g7222-2003",
+    "standard-g7222-2003",
+    "standard-g7222-2003",
+    "standard-g7222-2003",
+    "standard-g7222-2003"
+  ],
+  "channels": [
+    [
+      "fts",
+      "semantic"
+    ],
+    [
+      "fts",
+      "semantic"
+    ],
+    [
+      "fts",
+      "semantic"
+    ],
+    [
+      "fts",
+      "semantic"
+    ],
+    [
+      "fts",
+      "semantic"
+    ]
+  ],
+  "screenshot": {
+    "span_id": "span:standard-g7222-2003:25:0:74f60224f0",
+    "sha256": "1f56b7f89b7d6e136b83c8e561219b7ef56d0321caa7c18314bc2d4d1def1ead",
+    "format": "PNG",
+    "dimensions": "893x1263"
+  },
+  "model_provider": {
+    "ready": false,
+    "live_calls_executed": 0,
+    "missing": [
+      "MODEL_API_KEY",
+      "MAPPER_MODEL",
+      "REVIEWER_MODEL"
+    ]
+  }
+}

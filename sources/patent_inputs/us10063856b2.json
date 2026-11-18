@@ -1,0 +1,18 @@
+{
+  "id": "patent-us10063856b2",
+  "identifier": "US10063856B2",
+  "title": "Chroma Quantization Parameter Extension",
+  "filename": "US10063856.pdf",
+  "document_id": "patent-us10063856b2",
+  "subject": "Video coding apparatus that sets chroma quantization parameters relative to luma QP using picture-level chroma QP offset and quantizes orthogonal-transformed picture data.",
+  "description": "Encoding apparatus for video using chroma QP derivation and quantization of transform data.",
+  "claims": [
+    {
+      "number": 1,
+      "preview": "Encoding apparatus configured to set chroma QP from luma QP plus picture-level offset and quantize transform data.",
+      "exact_text": "An encoding apparatus, comprising : circuitry configured to : set a chroma quantization parameter (Q P ) included in a chroma QP range from 0 to 51 equal to a luma QP value, based on a parameter including a picture level chroma QP offset added to a luma QP ; and quantize transform data that is orthogonal - transformed from a picture , based on the set chroma QP to generate quantized data .",
+      "depends_on": []
+    }
+  ],
+  "notes": "Prepared assessment input. Additional claims are not yet in this adapter; All claims means all claims exposed here."
+}
