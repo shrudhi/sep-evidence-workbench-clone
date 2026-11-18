@@ -60,10 +60,27 @@ export default function App() {
   const [reviewMode, setReviewMode] = useState(initialLink.view === "review");
   const [navCollapsed, setNavCollapsed] = useState(false);
 
-  const selectionRun = runs.find((run) => run.id === activeRunId);
-  const selectionPending =
-    selectionRun &&
-    ["queued", "selecting", "awaiting_target_confirm"].includes(selectionRun.status);
+  // Path A selection is separate from chart runs. Prefer awaiting/in-flight selection,
+  // then any selection_only run that already has recommend/reject rationales.
+  const isSelectionRun = (run: RunSummary) =>
+    Boolean(run.selection_only) ||
+    ["selecting", "awaiting_target_confirm"].includes(run.status) ||
+    (run.has_target_decision === true &&
+      ["complete", "awaiting_target_confirm"].includes(run.status) &&
+      !["analyst_review", "mapping", "searching", "reviewing"].includes(run.status));
+  const selectionRun =
+    runs.find((run) => run.id === activeRunId && isSelectionRun(run)) ||
+    runs.find((run) => run.status === "awaiting_target_confirm") ||
+    runs.find((run) => ["queued", "selecting"].includes(run.status) && isSelectionRun(run)) ||
+    runs.find((run) => run.selection_only && run.has_target_decision) ||
+    runs.find((run) => run.selection_only);
+  const selectionStatusForSetup = selectionRun
+    ? {
+        runId: selectionRun.id,
+        status: selectionRun.status,
+        statusLabel: selectionRun.status_label || selectionRun.status
+      }
+    : null;
 
   const refresh = useCallback(async () => {
     const [nextSetup, nextHealth, nextRuns] = await Promise.all([
@@ -88,6 +105,17 @@ export default function App() {
   useEffect(() => {
     refresh().catch((error: Error) => setNotice(error.message));
   }, [refresh]);
+
+  // Keep Setup selection status fresh even when the active chart run is different.
+  useEffect(() => {
+    if (screen !== "setup") return;
+    const timer = window.setInterval(() => {
+      api<RunSummary[]>("/api/runs")
+        .then(setRuns)
+        .catch(() => undefined);
+    }, 3000);
+    return () => window.clearInterval(timer);
+  }, [screen]);
 
   useEffect(() => {
     if (!activeRunId) {
@@ -199,6 +227,12 @@ export default function App() {
       });
       setActiveRunId(created.id);
       setScreen("charts");
+      const params = new URLSearchParams({
+        project: PROJECT_ID,
+        run: created.id,
+        view: "charts"
+      });
+      window.history.replaceState({}, "", `/?${params.toString()}`);
       setNotice(
         created.warning ||
           `Building claim chart${created.document_count > 1 ? "s" : ""} for ${created.document_count} standard${created.document_count > 1 ? "s" : ""}.`
@@ -267,7 +301,17 @@ export default function App() {
           </button>
           <button
             className={`nav-item ${screen === "setup" ? "active" : ""}`}
-            onClick={() => setScreen("setup")}
+            onClick={() => {
+              if (selectionRun) {
+                const params = new URLSearchParams({
+                  project: PROJECT_ID,
+                  run: selectionRun.id,
+                  view: "setup"
+                });
+                window.history.replaceState({}, "", `/?${params.toString()}`);
+              }
+              setScreen("setup");
+            }}
             title="Setup"
           >
             <Layers3 size={16} />
@@ -277,6 +321,24 @@ export default function App() {
             className={`nav-item ${screen === "charts" ? "active" : ""}`}
             onClick={() => {
               setReviewMode(false);
+              const preferred =
+                runs.find((run) =>
+                  ["mapping", "reviewing", "searching", "decomposing", "queued"].includes(
+                    run.status
+                  )
+                ) ||
+                runs.find((run) => run.id === setup?.project.active_run_id) ||
+                runs.find((run) => run.status === "analyst_review") ||
+                runs.find((run) => run.status === "complete");
+              if (preferred) {
+                setActiveRunId(preferred.id);
+                const params = new URLSearchParams({
+                  project: PROJECT_ID,
+                  run: preferred.id,
+                  view: "charts"
+                });
+                window.history.replaceState({}, "", `/?${params.toString()}`);
+              }
               setScreen("charts");
             }}
             title="Claim charts"
@@ -368,15 +430,7 @@ export default function App() {
               onResetAutomation={resetAutomation}
               onStart={() => startAnalysis()}
               onConfirmTargets={confirmTargets}
-              selectionStatus={
-                selectionPending
-                  ? {
-                      runId: selectionRun!.id,
-                      status: selectionRun!.status,
-                      statusLabel: selectionRun!.status_label || selectionRun!.status
-                    }
-                  : null
-              }
+              selectionStatus={selectionStatusForSetup}
             />
           ) : screen === "settings" ? (
             <SettingsScreen

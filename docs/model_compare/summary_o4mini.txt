@@ -1,0 +1,9 @@
+MODEL=o4-mini
+1[a]	passed	0	2.8	The evidence, rationale and mapping label passed review.
+1[b]	attention	3	1.8	This row does not include a search record for the standard.
+1[c]	attention	1	2.5	Confirm the clause against the cited PDF page.
+1[d]	attention	3	1.9	This row does not include a search record for the standard.
+1[e]	attention	2	2.4	Confirm the clause against the cited PDF page.
+1[f]	attention	3	2.9	Rationale correctly identifies missing evidence for orthogonality but lacks evidence for quantization.
+1[g]	attention	1	2.4	Confirm the clause against the cited PDF page.
+1[h]	passed	0	2.1	The evidence, rationale and mapping label passed review.

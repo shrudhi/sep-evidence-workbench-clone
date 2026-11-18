@@ -133,14 +133,25 @@ def setup_bundle(project_id: str) -> dict[str, Any]:
     if project.get("patent_input_id"):
         try:
             patent = load_patent_input(project["patent_input_id"])
-            # Default to Claim 1 when nothing selected; analyst may multi-select claims.
+            # Default assessment scope: Claim 1 only (analyst may expand after opening claims).
             if patent:
                 available = [int(claim["number"]) for claim in patent.get("claims", [])]
                 selected = [
                     int(n) for n in (project.get("selected_claim_numbers") or []) if int(n) in available
                 ]
-                if not selected and available:
-                    default = [1] if 1 in available else available[:1]
+                default = [1] if 1 in available else available[:1]
+                if default and selected != default and (
+                    not selected or selected == available
+                ):
+                    # Reset empty or "all claims" selections back to Claim 1 default.
+                    project = update_project(
+                        project_id,
+                        {
+                            "claim_scope": "select",
+                            "selected_claim_numbers": default,
+                        },
+                    )
+                elif not selected and default:
                     project = update_project(
                         project_id,
                         {

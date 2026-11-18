@@ -1,0 +1,9 @@
+MODEL=gpt-4o-mini
+1[a]	passed	0	2.8	The evidence, rationale and mapping label passed review.
+1[b]	attention	3	2.8	This row does not include a search record for the standard.
+1[c]	attention	1	3.0	Confirm the clause against the cited PDF page.
+1[d]	attention	3	2.6	No evidence to verify luma QP range; rationale correctly identifies this gap.
+1[e]	attention	2	3.1	Confirm the clause against the cited PDF page.
+1[f]	attention	3	2.1	Rationale correctly identifies missing orthogonality evidence but lacks evidence for any part of the claim.
+1[g]	attention	1	2.3	Confirm the clause against the cited PDF page.
+1[h]	passed	0	2.3	The evidence, rationale and mapping label passed review.

@@ -12,15 +12,21 @@ type Props = {
   evidenceTierLabel?: string | null;
 };
 
-function groupLabel(blocks: EvidenceBlock[]): string {
+function groupLabel(blocks: EvidenceBlock[], index: number, total: number): string {
   const first = blocks[0];
   if (!first) return "Passages";
   const printed = formatPrintedPage(first.printed_label);
   const pdf = first.page_ordinal;
-  if (printed && pdf != null) return `Printed p. ${printed} · PDF p. ${pdf}`;
-  if (printed) return `Printed p. ${printed}`;
-  if (pdf != null) return `PDF p. ${pdf}`;
-  return "Page not resolved";
+  const page =
+    printed && pdf != null
+      ? `Printed p. ${printed} · PDF p. ${pdf}`
+      : printed
+        ? `Printed p. ${printed}`
+        : pdf != null
+          ? `PDF p. ${pdf}`
+          : "Page not resolved";
+  if (total > 1) return `Proof ${index + 1} of ${total} · ${page}`;
+  return page;
 }
 
 export default function EvidencePassageList({
@@ -28,7 +34,7 @@ export default function EvidencePassageList({
   activeEvidenceId,
   onOpenDocument,
   emptyLabel = "No linked passages yet",
-  title = "Standard passages",
+  title = "",
   targetEdition = null,
   evidenceTierLabel = null
 }: Props) {
@@ -36,6 +42,7 @@ export default function EvidencePassageList({
     return <div className="evidence-empty">{emptyLabel}</div>;
   }
 
+  // One group per PDF page so each page keeps its own Source / Quote / Screenshot.
   const groups: { key: string; blocks: EvidenceBlock[] }[] = [];
   for (const block of blocks) {
     const key = pageGroupKey(block);
@@ -44,18 +51,22 @@ export default function EvidencePassageList({
     else groups.push({ key, blocks: [block] });
   }
 
+  const multiPage = groups.length > 1;
+
   return (
     <div className="evidence-passage-list">
-      {title !== "Standard passages" ? (
-        <div className="evidence-passage-list-title">{title}</div>
+      {title ? <div className="evidence-passage-list-title">{title}</div> : null}
+      {multiPage ? (
+        <div className="doc-sub" style={{ marginBottom: 8 }}>
+          Evidence spans {groups.length} pages — each page has its own quote and screenshot.
+        </div>
       ) : null}
-      {groups.map((group) => (
+      {groups.map((group, index) => (
         <section key={group.key} className="evidence-page-group">
-          {groups.length > 1 ? (
+          {multiPage ? (
             <header className="evidence-page-group-head">
-              <span className="evidence-page-group-label">{groupLabel(group.blocks)}</span>
-              <span className="doc-sub">
-                {group.blocks.length} passage{group.blocks.length === 1 ? "" : "s"}
+              <span className="evidence-page-group-label">
+                {groupLabel(group.blocks, index, groups.length)}
               </span>
             </header>
           ) : null}

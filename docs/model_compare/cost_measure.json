@@ -1,0 +1,82 @@
+{
+  "method": "Live /chat/completions on real Claim-1 revision payloads (system=INSTRUCTIONS). Cost = usage tokens \u00d7 OpenAI standard list prices.",
+  "pricing_usd_per_1m": {
+    "gpt-4o-mini": {
+      "input": 0.15,
+      "output": 0.6
+    },
+    "gpt-4o": {
+      "input": 2.5,
+      "output": 10.0
+    },
+    "o4-mini": {
+      "input": 1.1,
+      "output": 4.4
+    }
+  },
+  "pricing_source": "https://developers.openai.com/api/docs/pricing",
+  "notes": [
+    "o4-mini API now returns model_not_found (shut down); o4-mini $ is estimated from measured token counts \u00d7 published rates.",
+    "App INPUT_COST/OUTPUT_COST env vars are generic and understate gpt-4o; tradeoff uses official model prices.",
+    "Reviewer-only cost \u2014 mapper stays gpt-4o-mini."
+  ],
+  "measurements": [
+    {
+      "row": "1[a]-partial",
+      "model": "gpt-4o-mini",
+      "prompt_tokens": 1291,
+      "completion_tokens": 156,
+      "latency_ms": 3610,
+      "cost_usd": 0.000287,
+      "o4mini_cost_if_same_tokens_usd": 0.002106
+    },
+    {
+      "row": "1[a]-partial",
+      "model": "gpt-4o",
+      "prompt_tokens": 1291,
+      "completion_tokens": 105,
+      "latency_ms": 2912,
+      "cost_usd": 0.004278,
+      "o4mini_cost_if_same_tokens_usd": 0.001882
+    },
+    {
+      "row": "1[d]-nomap",
+      "model": "gpt-4o-mini",
+      "prompt_tokens": 522,
+      "completion_tokens": 227,
+      "latency_ms": 3645,
+      "cost_usd": 0.000215,
+      "o4mini_cost_if_same_tokens_usd": 0.001573
+    },
+    {
+      "row": "1[d]-nomap",
+      "model": "gpt-4o",
+      "prompt_tokens": 522,
+      "completion_tokens": 75,
+      "latency_ms": 2168,
+      "cost_usd": 0.002055,
+      "o4mini_cost_if_same_tokens_usd": 0.000904
+    }
+  ],
+  "claim1_mix": {
+    "with_evidence_proxy": 5,
+    "no_map_proxy": 3,
+    "total": 8
+  },
+  "estimated_claim1_ai_review_cost_usd": {
+    "gpt-4o-mini": 0.00208,
+    "gpt-4o": 0.027555,
+    "o4-mini_estimated": 0.013687
+  },
+  "per_100_charts_usd": {
+    "gpt-4o-mini": 0.208,
+    "gpt-4o": 2.7555,
+    "o4-mini_estimated": 1.3687
+  },
+  "vs_mini": {
+    "gpt-4o_multiple": 13.25,
+    "gpt-4o_incremental_per_chart_usd": 0.025475,
+    "gpt-4o_incremental_per_100_charts_usd": 2.5475,
+    "o4mini_estimated_multiple": 6.58
+  }
+}

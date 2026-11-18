@@ -28,11 +28,26 @@ review and integrity checks do not equal analyst acceptance.
   screenshot lineage, independent review findings, and disposition appendix.
 - One-service Docker image: FastAPI serves the built React/TypeScript frontend.
 
-Only G.722.2 (07/2003) and TS 36.211 V17.2.0 are currently attached as standards.
-H.265 V10 (07/2024) has a clean `pending` entry in `sources/manifest.json`; it is
-excluded from target selection until its exact PDF and SHA-256 are supplied.
-Partial-corpus runs are explicitly recorded as non-final, and reviewed-final
-export is blocked unless the run snapshot included every manifest standard.
+All three assessment standards are indexed: **G.722.2**, **H.265 V10**, and
+**TS 36.211**. Path A flow: Setup recommends/rejects with rationales → analyst
+confirms target(s) → Claim charts (3-col) → review + HITL → Word export + trace.
+
+### Assessment docs
+
+- [One-page PRD](docs/PRD.md)
+- [One-page user flow](docs/USER_FLOW.md) (happy path + two failure branches)
+- [Eval failure modes + production plan](docs/EVAL_FAILURE_MODES.md)
+- Gold pack: `evaluation_data/Expected_Claim1_Reference_Pack/`
+
+### Demo run (local)
+
+```bash
+# After server is up at :8000
+# Charts: http://127.0.0.1:8000/?project=lumenci-assessment&run=<run_id>&view=charts
+# Export: GET /api/runs/<run_id>/export?final=true
+# Trace:  GET /api/runs/<run_id>/trace
+# Evals:  POST /api/evaluation-runs  {"run_id":"...","dataset_id":"expected-claim1-v1"}
+```
 
 ## Run locally
 

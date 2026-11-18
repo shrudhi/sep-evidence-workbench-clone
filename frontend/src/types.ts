@@ -128,6 +128,8 @@ export type RunSummary = {
   created_at: string;
   error?: string;
   target_document_id?: string;
+  selection_only?: boolean;
+  has_target_decision?: boolean;
 };
 
 export type EvidenceBlock = {
@@ -160,6 +162,22 @@ export type EvidenceBlock = {
   screenshot_url?: string;
   inspect_url?: string;
   role?: string;
+  authorship?: "ai" | "human" | string;
+  manual?: boolean;
+};
+
+export type ChangeLogEntry = {
+  id: string;
+  run_id: string;
+  element_id: string;
+  revision_id: string;
+  prior_revision_id?: string | null;
+  origin: "ai" | "human" | "ai_fix" | string;
+  origin_label?: string;
+  actor: string;
+  summary: string;
+  created_at: string;
+  snapshot?: Record<string, unknown>;
 };
 
 export type JudgeCriterion = {
@@ -286,17 +304,83 @@ export type AiReviewCheck = {
   id: string;
   status: "pass" | "fail" | "unverified" | "na" | string;
   reason: string;
+  explanation?: string;
+  recommendation?: string | null;
+  failure_mode?: string | null;
+  evidence_reference?: string | null;
+};
+
+export type AiReviewRecommendedFix = {
+  summary: string;
+  mapping_label?: string | null;
+  rationale?: string | null;
+  remove_evidence_ids?: string[];
+  add_search_hints?: string[];
+  change_ids?: string[];
+  action?: string;
+  recommended_label?: string | null;
+};
+
+export type AiReviewRecommendation = {
+  id: string;
+  action: "add" | "update" | "remove" | string;
+  target: string;
+  title: string;
+  finding?: string;
+  detail: string;
+  mapping_label?: string | null;
+  rationale?: string | null;
+  evidence_id?: string | null;
+  researched_quote?: string | null;
+  researched_section?: string | null;
+  researched_page?: string | null;
+  applyable?: boolean;
+};
+
+/** @deprecated use AiReviewRecommendation */
+export type AiReviewSuggestedChange = AiReviewRecommendation;
+
+export type AiReviewSourceReview = {
+  evidence_number: number;
+  evidence_id?: string | null;
+  label: string;
+  checks: AiReviewCheck[];
 };
 
 export type AiReview = {
-  status: "passed" | "attention" | "pending" | "running" | "unavailable" | string;
+  status:
+    | "passed"
+    | "needs_correction"
+    | "incomplete"
+    | "ambiguous"
+    | "sent_back"
+    | "flagged"
+    | "attention"
+    | "pending"
+    | "running"
+    | "unavailable"
+    | string;
+  status_label?: string;
   reason: string;
+  explanation?: string;
   ai?: "reviewed" | "not_configured" | "unavailable" | string;
   checks?: AiReviewCheck[];
+  claim_checks?: AiReviewCheck[];
+  source_reviews?: AiReviewSourceReview[];
+  evidence_checks?: AiReviewCheck[];
+  recommendations?: AiReviewRecommendation[];
+  suggested_changes?: AiReviewRecommendation[];
+  current_mapping_label?: string | null;
+  recommended_mapping_label?: string | null;
+  recommended_fix?: AiReviewRecommendedFix | null;
+  review_run_id?: string;
   revision_id?: string;
   element_id?: string;
   element_label?: string;
+  run_id?: string;
   reviewed_at?: string;
+  schema_version?: number;
+  superseded?: boolean;
 };
 
 export type ChartRevision = {
@@ -330,6 +414,16 @@ export type ChartRevision = {
   review_id?: string | null;
   judge?: JudgeReport | null;
   ai_review?: AiReview | null;
+  authorship?: "ai" | "human" | "ai_fix" | string;
+  authorship_label?: string;
+  chart_edit?: {
+    origin?: string;
+    actor?: string;
+    manual_evidence?: Record<string, unknown>[];
+    evidence_overrides?: Record<string, unknown>;
+  } | null;
+  change_logs?: ChangeLogEntry[];
+  model_name?: string | null;
 };
 
 export type ProductEvidenceItem = {

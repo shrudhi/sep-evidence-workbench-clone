@@ -25,6 +25,8 @@ from .projects import (
 from .retrieval import search
 from .agent_ask import (
     accept_proposal,
+    apply_message_citations,
+    delete_conversation,
     ensure_conversation,
     get_conversation,
     list_conversations,
@@ -88,7 +90,7 @@ from .evaluation import (
     remove_reference_file,
     upload_reference_file,
 )
-from .ai_review import ai_review_from_checks, review_revision
+from .ai_review import apply_recommended_fix, ai_review_from_checks, review_revision
 from .chart_schema import enrich_mapping_tags, ensure_chart_schema
 from .ops_schema import ensure_ops_schema
 from .product_evidence import (
@@ -166,6 +168,18 @@ class DecisionRequest(BaseModel):
     judge_override_reason: str = Field(default="", max_length=3000)
 
 
+class EvidenceEditEntry(BaseModel):
+    evidence_id: str | None = None
+    standard_edition: str | None = Field(default=None, max_length=500)
+    section: str | None = Field(default=None, max_length=300)
+    printed_page: str | None = Field(default=None, max_length=80)
+    pdf_page: int | str | None = None
+    quote: str | None = Field(default=None, max_length=12000)
+    screenshot_data_url: str | None = Field(default=None, max_length=6_000_000)
+    manual: bool = False
+    removed: bool = False
+
+
 class MappingEditRequest(BaseModel):
     rationale: str | None = Field(default=None, max_length=8000)
     mapping_label: Literal["Full map", "Partial map", "No map", "Abstain"] | None = None
@@ -190,6 +204,13 @@ class MappingEditRequest(BaseModel):
     ) = None
     requirement_condition: str | None = Field(default=None, max_length=2000)
     edit_reason: str = Field(default="Analyst direct edit", max_length=3000)
+    analyst_name: str = Field(default="Analyst", max_length=200)
+    evidence_entries: list[EvidenceEditEntry] | None = None
+
+
+class MappingRevertRequest(BaseModel):
+    target_revision_id: str = Field(min_length=8, max_length=100)
+    analyst_name: str = Field(default="Analyst", max_length=200)
 
 
 class AccusedProductRequest(BaseModel):
@@ -458,6 +479,7 @@ def list_runs(limit: int = Query(default=20, ge=1, le=100)) -> list[dict[str, An
             for row in connection.execute(
                 """
                 SELECT r.id,r.status,r.target_document_id,r.created_at,r.updated_at,r.error,
+                       r.model_config_json,r.target_decision_json,
                        d.family,d.edition
                 FROM runs r LEFT JOIN documents d ON d.id=r.target_document_id
                 ORDER BY r.created_at DESC LIMIT ?
@@ -466,7 +488,15 @@ def list_runs(limit: int = Query(default=20, ge=1, le=100)) -> list[dict[str, An
             )
         ]
     for row in rows:
+        model_config = json.loads(row.pop("model_config_json") or "{}")
+        decision_raw = row.pop("target_decision_json") or ""
+        decision = json.loads(decision_raw) if decision_raw else None
         row["status_label"] = human_status(row["status"])
+        row["selection_only"] = bool(model_config.get("selection_only"))
+        row["has_target_decision"] = bool(
+            isinstance(decision, dict)
+            and (decision.get("candidates") or decision.get("target_document_id"))
+        )
     return rows
 
 
@@ -693,6 +723,28 @@ def chart(run_id: str) -> dict[str, Any]:
                     role="candidate",
                     refine=is_latest,
                 )
+                from .chart_edit import (
+                    apply_edit_meta_to_blocks,
+                    edit_meta_from_checks,
+                    list_change_logs,
+                    origin_label,
+                    revision_origin,
+                )
+
+                checks_for_meta = (
+                    item.get("checks") if isinstance(item.get("checks"), dict) else {}
+                )
+                edit_meta = edit_meta_from_checks(checks_for_meta)
+                item["evidence_blocks"] = apply_edit_meta_to_blocks(
+                    item["evidence_blocks"], edit_meta
+                )
+                item["chart_edit"] = edit_meta
+                item["authorship"] = revision_origin(
+                    item.get("model_name"), edit_meta=edit_meta
+                )
+                item["authorship_label"] = origin_label(item["authorship"])
+                if is_latest:
+                    item["change_logs"] = list_change_logs(element["id"], limit=30)
                 item.update(mapping_display(item.get("mapping_label")))
                 tags = enrich_mapping_tags(
                     {
@@ -770,6 +822,7 @@ class AgentConversationRequest(BaseModel):
     scope_type: Literal["element", "standard"]
     document_id: str = Field(min_length=3, max_length=200)
     element_id: str | None = None
+    force_new: bool = False
 
 
 class AgentMessageRequest(BaseModel):
@@ -794,6 +847,7 @@ def create_agent_conversation(request: AgentConversationRequest) -> dict[str, An
             scope_type=request.scope_type,
             document_id=request.document_id,
             element_id=request.element_id,
+            force_new=request.force_new,
         )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -805,6 +859,14 @@ def create_agent_conversation(request: AgentConversationRequest) -> dict[str, An
 def read_agent_conversation(conversation_id: str) -> dict[str, Any]:
     try:
         return get_conversation(conversation_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.delete("/api/agent/conversations/{conversation_id}")
+def remove_agent_conversation(conversation_id: str) -> dict[str, Any]:
+    try:
+        return delete_conversation(conversation_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -860,6 +922,39 @@ def reject_agent_proposal(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+class ApplyCitationsRequest(BaseModel):
+    analyst_name: str = Field(default="Analyst", max_length=200)
+
+
+@app.post("/api/agent/messages/{message_id}/apply-citations")
+def apply_agent_citations(
+    message_id: str, request: ApplyCitationsRequest
+) -> dict[str, Any]:
+    try:
+        result = apply_message_citations(
+            message_id, analyst_name=request.analyst_name
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    run_id = None
+    with connect() as connection:
+        row = connection.execute(
+            "SELECT run_id FROM row_revisions WHERE id=?",
+            (result.get("revision_id"),),
+        ).fetchone()
+        if row:
+            run_id = row["run_id"]
+    if run_id:
+        after_row_change(run_id)
+        try:
+            result["ai_review"] = review_revision(result["revision_id"])
+        except Exception:
+            result["ai_review"] = None
+    return result
 
 
 @app.post("/api/rows/{revision_id}/challenge", status_code=202)
@@ -1024,6 +1119,41 @@ def ai_review_row(revision_id: str) -> dict[str, Any]:
     return result
 
 
+class AiReviewApplyFixRequest(BaseModel):
+    analyst_name: str = Field(default="Analyst", max_length=200)
+    project_id: str | None = Field(default=None, max_length=120)
+    change_ids: list[str] | None = None
+
+
+@app.post("/api/rows/{revision_id}/ai-review/apply-fix")
+def ai_review_apply_fix(
+    revision_id: str, request: AiReviewApplyFixRequest | None = None
+) -> dict[str, Any]:
+    """Apply AI Review suggested add/update/remove changes (new revision + audit log)."""
+    body = request or AiReviewApplyFixRequest()
+    try:
+        result = apply_recommended_fix(
+            revision_id,
+            analyst_name=body.analyst_name,
+            project_id=body.project_id,
+            change_ids=body.change_ids,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    with connect() as connection:
+        run_row = connection.execute(
+            "SELECT run_id FROM row_revisions WHERE id=?",
+            (result["revision_id"],),
+        ).fetchone()
+    if run_row:
+        after_row_change(run_row["run_id"])
+    return result
+
+
 @app.post("/api/rows/{revision_id}/search-again")
 def search_again(revision_id: str) -> dict[str, Any]:
     """Explicit analyst action: re-search evidence and remapping this row."""
@@ -1056,21 +1186,23 @@ def search_again(revision_id: str) -> dict[str, Any]:
 
 @app.post("/api/rows/{revision_id}/edit")
 def edit_mapping(revision_id: str, request: MappingEditRequest) -> dict[str, Any]:
-    """Analyst direct edit of rationale / mapping tags (creates a new revision)."""
+    """Analyst direct edit of rationale / mapping / evidence (creates a new revision)."""
     if not OpenAICompatibleProvider().readiness()["ready"]:
         raise HTTPException(status_code=503, detail="Model provider is not configured")
+    payload: dict[str, Any] = {
+        "rationale": request.rationale,
+        "mapping_label": request.mapping_label,
+        "match_strength": request.match_strength,
+        "requirement_applicability": request.requirement_applicability,
+        "requirement_condition": request.requirement_condition,
+        "edit_reason": request.edit_reason,
+        "analyst_name": request.analyst_name,
+        "origin": "human",
+    }
+    if request.evidence_entries is not None:
+        payload["evidence_entries"] = [entry.model_dump() for entry in request.evidence_entries]
     try:
-        new_revision_id = revise_mapping_fields(
-            revision_id,
-            {
-                "rationale": request.rationale,
-                "mapping_label": request.mapping_label,
-                "match_strength": request.match_strength,
-                "requirement_applicability": request.requirement_applicability,
-                "requirement_condition": request.requirement_condition,
-                "edit_reason": request.edit_reason,
-            },
-        )
+        new_revision_id = revise_mapping_fields(revision_id, payload)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:
@@ -1090,6 +1222,49 @@ def edit_mapping(revision_id: str, request: MappingEditRequest) -> dict[str, Any
         "revision_id": new_revision_id,
         "prior_revision_id": revision_id,
         "status": "edited",
+        "ai_review": ai_review,
+    }
+
+
+@app.get("/api/elements/{element_id}/change-logs")
+def get_element_change_logs(element_id: str) -> dict[str, Any]:
+    from .chart_edit import list_change_logs
+
+    return {"items": list_change_logs(element_id)}
+
+
+@app.post("/api/rows/{revision_id}/revert")
+def revert_mapping(revision_id: str, request: MappingRevertRequest) -> dict[str, Any]:
+    from .workflow import revert_to_revision
+
+    if not OpenAICompatibleProvider().readiness()["ready"]:
+        raise HTTPException(status_code=503, detail="Model provider is not configured")
+    try:
+        new_revision_id = revert_to_revision(
+            revision_id,
+            target_revision_id=request.target_revision_id,
+            analyst_name=request.analyst_name,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    with connect() as connection:
+        run_row = connection.execute(
+            "SELECT run_id FROM row_revisions WHERE id=?", (new_revision_id,)
+        ).fetchone()
+    if run_row:
+        after_row_change(run_row["run_id"])
+    ai_review = None
+    try:
+        ai_review = review_revision(new_revision_id)
+    except Exception:
+        ai_review = None
+    return {
+        "revision_id": new_revision_id,
+        "prior_revision_id": revision_id,
+        "reverted_to": request.target_revision_id,
+        "status": "reverted",
         "ai_review": ai_review,
     }
 

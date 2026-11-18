@@ -1,7 +1,12 @@
-import { useState, type MouseEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type ChangeEvent, type MouseEvent } from "react";
+import { Download, Plus, Trash2 } from "lucide-react";
 import { evidenceHeading, highlightAvailable } from "../evidenceLabels";
 import { formatPrintedPage, splitQuoteSegments } from "../evidenceQuote";
 import type { EvidenceBlock } from "../types";
+import ScreenshotModal, {
+  downloadScreenshot,
+  type ScreenshotItem
+} from "./ScreenshotModal";
 
 type Props = {
   block: EvidenceBlock;
@@ -13,6 +18,12 @@ type Props = {
   evidenceTierLabel?: string | null;
 };
 
+type AddedShot = {
+  id: string;
+  name: string;
+  src: string;
+};
+
 /** Build an <img>-safe screenshot URL (colon-bearing span IDs break path URLs). */
 function screenshotImgSrc(block: EvidenceBlock): string {
   const eid = block.evidence_id;
@@ -21,7 +32,6 @@ function screenshotImgSrc(block: EvidenceBlock): string {
   }
   const raw = block.screenshot_url || "";
   if (!raw) return "";
-  // Legacy path form: /api/evidence/{span_id}/screenshot
   const match = raw.match(/^(\/api\/evidence\/)(.+?)(\/screenshot)(\?.*)?$/);
   if (match) {
     return `${match[1]}${encodeURIComponent(decodeURIComponent(match[2]))}${match[3]}?v=crop5`;
@@ -29,11 +39,14 @@ function screenshotImgSrc(block: EvidenceBlock): string {
   return `${raw}${raw.includes("?") ? "&" : "?"}v=crop5`;
 }
 
-/**
- * Reference-chart style evidence cell:
- * Evidence ID | edition | section | pages → quote → cropped screenshot → View in Doc.
- * The card itself is not clickable; only the explicit button opens the document.
- */
+function pageCaption(block: EvidenceBlock, printed: string | null): string {
+  const parts = [
+    block.page_ordinal != null ? `PDF p. ${block.page_ordinal}` : null,
+    printed ? `printed p. ${printed}` : null
+  ].filter(Boolean);
+  return parts.join(" · ") || "Cited passage";
+}
+
 export default function EvidenceBlockCard({
   block,
   active = false,
@@ -42,6 +55,43 @@ export default function EvidenceBlockCard({
   targetEdition = null
 }: Props) {
   const [quoteExpanded, setQuoteExpanded] = useState(false);
+  const [modalOpen, setModalOpen] = useState(false);
+  const [activeShotId, setActiveShotId] = useState("primary");
+  const [addedShots, setAddedShots] = useState<AddedShot[]>([]);
+  const [primaryHidden, setPrimaryHidden] = useState(false);
+  const addFileRef = useRef<HTMLInputElement>(null);
+
+  const printed = formatPrintedPage(block.printed_label);
+  const rawPrimarySrc = block.available && block.screenshot_url ? screenshotImgSrc(block) : "";
+  const primarySrc = primaryHidden ? "" : rawPrimarySrc;
+
+  const shotItems: ScreenshotItem[] = useMemo(() => {
+    const items: ScreenshotItem[] = [];
+    if (primarySrc) {
+      items.push({
+        id: "primary",
+        src: primarySrc,
+        label: `Screenshot · ${pageCaption(block, printed)}`,
+        removable: true
+      });
+    }
+    for (const shot of addedShots) {
+      items.push({
+        id: shot.id,
+        src: shot.src,
+        label: shot.name,
+        removable: true
+      });
+    }
+    return items;
+  }, [primarySrc, addedShots, block, printed]);
+
+  useEffect(() => {
+    return () => {
+      for (const shot of addedShots) URL.revokeObjectURL(shot.src);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   if (!block.available) {
     return (
@@ -52,6 +102,7 @@ export default function EvidenceBlockCard({
     );
   }
 
+  const family = block.source?.family || block.source?.short_label || "Standard";
   const edition = block.source?.edition || "Edition unknown";
   const editionMismatch =
     Boolean(targetEdition && block.source?.edition) &&
@@ -63,21 +114,13 @@ export default function EvidenceBlockCard({
       ? block.section_label
       : null) ||
     "Section n/a";
-  const printed = formatPrintedPage(block.printed_label);
-  const pageLine = [
-    printed ? `printed ${printed}` : null,
-    block.page_ordinal != null ? `PDF ${block.page_ordinal}` : null
-  ]
+  const pageParts = [
+    printed ? `printed p. ${printed}` : null,
+    block.page_ordinal != null ? `PDF p. ${block.page_ordinal}` : null
+  ].filter(Boolean);
+  const sourceLine = [family, edition, section, pageParts.join(" · ") || null]
     .filter(Boolean)
-    .join(" / ");
-  const citationLine = [
-    `E${String(block.evidence_number).padStart(2, "0")}`,
-    edition,
-    section,
-    pageLine || null
-  ]
-    .filter(Boolean)
-    .join(" | ");
+    .join(" · ");
 
   const segments = splitQuoteSegments(block.quote || "");
   const longQuote = (block.quote || "").length > 420;
@@ -98,27 +141,140 @@ export default function EvidenceBlockCard({
     onOpenDocument?.(block);
   };
 
+  const openModal = (event: MouseEvent, shotId = shotItems[0]?.id || "primary") => {
+    event.stopPropagation();
+    if (!shotItems.length) return;
+    setActiveShotId(shotId);
+    setModalOpen(true);
+  };
+
+  const onAddFiles = (files: FileList | null) => {
+    if (!files?.length) return;
+    const next: AddedShot[] = [];
+    for (const file of Array.from(files)) {
+      if (!file.type.startsWith("image/")) continue;
+      next.push({
+        id: `added-${crypto.randomUUID()}`,
+        name: file.name,
+        src: URL.createObjectURL(file)
+      });
+    }
+    if (!next.length) return;
+    setAddedShots((prev) => [...prev, ...next]);
+    setActiveShotId(next[0].id);
+    setModalOpen(true);
+  };
+
+  const onAddFileChange = (event: ChangeEvent<HTMLInputElement>) => {
+    onAddFiles(event.target.files);
+    event.target.value = "";
+  };
+
+  const removeShot = (item: ScreenshotItem) => {
+    if (item.id === "primary") {
+      setPrimaryHidden(true);
+      const remaining = shotItems.filter((s) => s.id !== "primary");
+      if (remaining.length) {
+        setActiveShotId(remaining[0].id);
+      } else {
+        setModalOpen(false);
+      }
+      return;
+    }
+    setAddedShots((prev) => {
+      const target = prev.find((s) => s.id === item.id);
+      if (target) URL.revokeObjectURL(target.src);
+      return prev.filter((s) => s.id !== item.id);
+    });
+    const remaining = shotItems.filter((s) => s.id !== item.id);
+    if (remaining.length) {
+      setActiveShotId(remaining[0].id);
+    } else {
+      setModalOpen(false);
+    }
+  };
+
+  const downloadName = [
+    family,
+    section !== "Section n/a" ? section : null,
+    block.page_ordinal != null ? `pdf-p${block.page_ordinal}` : null,
+    "screenshot"
+  ]
+    .filter(Boolean)
+    .join("-");
+
+  const activeItem = shotItems.find((s) => s.id === activeShotId) || shotItems[0] || null;
+
+  const iconActions = (shotId?: string) => (
+    <div className="screenshot-icon-actions" role="toolbar" aria-label="Screenshot actions">
+      <button
+        type="button"
+        className="screenshot-icon-btn"
+        aria-label="Download screenshot"
+        title="Download"
+        disabled={!shotItems.length}
+        onClick={(event) => {
+          event.stopPropagation();
+          const item =
+            (shotId ? shotItems.find((s) => s.id === shotId) : null) ||
+            shotItems.find((s) => s.id === "primary") ||
+            shotItems[0];
+          if (item) void downloadScreenshot(item, downloadName);
+        }}
+      >
+        <Download size={15} strokeWidth={2} />
+      </button>
+      <button
+        type="button"
+        className="screenshot-icon-btn"
+        aria-label="Add screenshot"
+        title="Add"
+        onClick={(event) => {
+          event.stopPropagation();
+          addFileRef.current?.click();
+        }}
+      >
+        <Plus size={15} strokeWidth={2} />
+      </button>
+      <button
+        type="button"
+        className="screenshot-icon-btn danger"
+        aria-label="Remove screenshot"
+        title="Remove"
+        disabled={!shotItems.length}
+        onClick={(event) => {
+          event.stopPropagation();
+          const item =
+            (shotId ? shotItems.find((s) => s.id === shotId) : null) ||
+            activeItem ||
+            shotItems[0];
+          if (item) removeShot(item);
+        }}
+      >
+        <Trash2 size={15} strokeWidth={2} />
+      </button>
+    </div>
+  );
+
   return (
     <article
-      className={`evidence-block structured reference-style ${
+      className={`evidence-block structured reference-style assignment-evidence ${
         active ? "active-in-viewer" : ""
       } ${editionMismatch ? "edition-mismatch" : ""}`}
     >
-      <header className="evidence-ref-head">
-        <div className="evidence-ref-citation" title={citationLine}>
-          {citationLine}
+      <div className="evidence-field">
+        <div className="evidence-label">Source</div>
+        <div className="evidence-ref-citation" title={sourceLine}>
+          {sourceLine}
         </div>
         {editionMismatch ? (
           <div className="warn-box" style={{ marginTop: 6 }}>
             Wrong edition — cited {block.source?.edition} ≠ chart {targetEdition}
           </div>
         ) : null}
-        {active ? (
-          <p className="evidence-id-meta">Showing in document panel</p>
-        ) : null}
-      </header>
+      </div>
 
-      <div className="evidence-quote-panel">
+      <div className="evidence-field evidence-quote-panel">
         <div className="evidence-label">Quote</div>
         {visibleSegments.map((segment, index) => (
           <div key={index} className="evidence-quote-segment">
@@ -142,33 +298,73 @@ export default function EvidenceBlockCard({
         ) : null}
       </div>
 
-      {!compact && block.screenshot_url ? (
-        <figure className="evidence-shot cropped">
-          <img
-            src={screenshotImgSrc(block)}
-            alt={`Cited passage screenshot for ${evidenceHeading(block)}`}
-            loading="lazy"
-          />
-          <figcaption>
-            Passage crop
-            {block.page_ordinal != null ? ` · PDF p. ${block.page_ordinal}` : ""}
-            {printed ? ` · Printed p. ${printed}` : ""}
-            {!highlightAvailable(block) ? " · Highlight unavailable" : ""}
-          </figcaption>
-          {onOpenDocument ? (
-            <button type="button" className="secondary view-in-doc" onClick={openDoc}>
-              {active ? "Showing in Doc" : "View in Doc"}
-            </button>
-          ) : null}
-        </figure>
-      ) : !compact ? (
-        <div className="evidence-shot-missing">
-          <p className="doc-sub">No passage screenshot available.</p>
-          {onOpenDocument ? (
-            <button type="button" className="secondary view-in-doc" onClick={openDoc}>
-              {active ? "Showing in Doc" : "View in Doc"}
-            </button>
-          ) : null}
+      {!compact ? (
+        <div className="evidence-field">
+          <div className="evidence-label-row">
+            <div className="evidence-label">Screenshot</div>
+            {iconActions(shotItems[0]?.id)}
+          </div>
+          {primarySrc || addedShots.length ? (
+            <figure className="evidence-shot cropped">
+              {primarySrc ? (
+                <button
+                  type="button"
+                  className="shot-hit"
+                  onClick={(event) => openModal(event, "primary")}
+                  aria-label="Enlarge screenshot"
+                  title="Click to enlarge"
+                >
+                  <img
+                    src={primarySrc}
+                    alt={`Screenshot of cited passage for ${evidenceHeading(block)}`}
+                    loading="lazy"
+                  />
+                </button>
+              ) : null}
+              {addedShots.length ? (
+                <div className="evidence-added-shots">
+                  {addedShots.map((shot) => (
+                    <button
+                      key={shot.id}
+                      type="button"
+                      className="shot-hit evidence-added-shot"
+                      onClick={(event) => openModal(event, shot.id)}
+                      aria-label={`Enlarge ${shot.name}`}
+                      title="Click to enlarge"
+                    >
+                      <img src={shot.src} alt={shot.name} loading="lazy" />
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+              <figcaption>
+                Passage as it appears on the cited page
+                {block.page_ordinal != null ? ` · PDF p. ${block.page_ordinal}` : ""}
+                {printed ? ` · printed p. ${printed}` : ""}
+                {!highlightAvailable(block) ? " · Highlight unavailable" : ""}
+                {addedShots.length ? ` · ${addedShots.length} added` : ""}
+                {" · click to enlarge"}
+              </figcaption>
+              {onOpenDocument ? (
+                <button type="button" className="secondary view-in-doc" onClick={openDoc}>
+                  {active ? "Showing in Doc" : "View in Doc"}
+                </button>
+              ) : null}
+            </figure>
+          ) : (
+            <div className="evidence-shot-missing">
+              <p className="doc-sub">
+                {rawPrimarySrc && primaryHidden
+                  ? "Screenshot removed. Use + to add one."
+                  : "No screenshot available for this citation."}
+              </p>
+              {onOpenDocument ? (
+                <button type="button" className="secondary view-in-doc" onClick={openDoc}>
+                  {active ? "Showing in Doc" : "View in Doc"}
+                </button>
+              ) : null}
+            </div>
+          )}
         </div>
       ) : null}
 
@@ -177,6 +373,28 @@ export default function EvidenceBlockCard({
           {block.highlight_warning || "Highlight unavailable"}
         </div>
       ) : null}
+
+      <input
+        ref={addFileRef}
+        type="file"
+        accept="image/png,image/jpeg,image/webp,image/gif"
+        multiple
+        hidden
+        onChange={onAddFileChange}
+      />
+
+      <ScreenshotModal
+        open={modalOpen && shotItems.length > 0}
+        title={evidenceHeading(block)}
+        subtitle={sourceLine}
+        items={shotItems}
+        activeId={activeShotId}
+        onSelect={setActiveShotId}
+        onClose={() => setModalOpen(false)}
+        onDownload={(item) => void downloadScreenshot(item, downloadName)}
+        onAddFiles={onAddFiles}
+        onRemove={removeShot}
+      />
     </article>
   );
 }

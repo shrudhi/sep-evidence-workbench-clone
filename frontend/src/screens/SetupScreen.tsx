@@ -83,6 +83,7 @@ export default function SetupScreen({
   const [decisionLoading, setDecisionLoading] = useState(false);
   const [chartTargets, setChartTargets] = useState<string[]>([]);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const [claimsOpen, setClaimsOpen] = useState(false);
   const [preview, setPreview] = useState<DocPreview | null>(null);
 
   const selectedClaims = project.selected_claim_numbers;
@@ -95,40 +96,63 @@ export default function SetupScreen({
   const awaitingConfirm = selectionStatus?.status === "awaiting_target_confirm";
   const selecting =
     selectionStatus && ["queued", "selecting"].includes(selectionStatus.status);
+  const showDecision =
+    Boolean(decision?.candidates?.length) &&
+    Boolean(
+      awaitingConfirm ||
+        selectionStatus?.status === "complete" ||
+        selectionStatus?.status === "analyst_review"
+    );
   const locked = Boolean(awaitingConfirm || selecting || starting || confirming);
 
   useEffect(() => {
-    if (!selectionStatus?.runId || selectionStatus.status !== "awaiting_target_confirm") {
+    if (!selectionStatus?.runId) {
       setDecision(null);
+      return;
+    }
+    // While selecting, clear stale rationales until the new decision arrives.
+    if (["queued", "selecting"].includes(selectionStatus.status)) {
+      setDecision(null);
+      setDecisionLoading(true);
       return;
     }
     let cancelled = false;
     setDecisionLoading(true);
-    api<RunDetail>(`/api/runs/${selectionStatus.runId}`)
-      .then((run) => {
-        if (cancelled) return;
-        const next = run.target_decision || null;
-        setDecision(next);
-        const recommended =
-          next?.target_document_id ||
-          next?.candidates.find((c) => c.disposition === "selected")?.document_id ||
-          run.target_document_id ||
-          "";
-        setChartTargets(recommended ? [recommended] : []);
-        if (recommended) {
-          setExpanded({ [recommended]: true });
-        }
-      })
-      .catch(() => {
-        if (!cancelled) setDecision(null);
-      })
-      .finally(() => {
-        if (!cancelled) setDecisionLoading(false);
-      });
+    const load = () =>
+      api<RunDetail>(`/api/runs/${selectionStatus.runId}`)
+        .then((run) => {
+          if (cancelled) return;
+          const next = run.target_decision || null;
+          setDecision(next);
+          const recommended =
+            next?.target_document_id ||
+            next?.candidates.find((c) => c.disposition === "selected")?.document_id ||
+            run.target_document_id ||
+            "";
+          setChartTargets((current) =>
+            awaitingConfirm || current.length === 0
+              ? recommended
+                ? [recommended]
+                : []
+              : current
+          );
+          if (recommended) {
+            setExpanded((current) =>
+              Object.keys(current).length ? current : { [recommended]: true }
+            );
+          }
+        })
+        .catch(() => {
+          if (!cancelled) setDecision(null);
+        })
+        .finally(() => {
+          if (!cancelled) setDecisionLoading(false);
+        });
+    load();
     return () => {
       cancelled = true;
     };
-  }, [selectionStatus?.runId, selectionStatus?.status]);
+  }, [selectionStatus?.runId, selectionStatus?.status, awaitingConfirm]);
 
   const candidateById = useMemo(() => {
     const map = new Map<string, CandidateDecision>();
@@ -141,7 +165,6 @@ export default function SetupScreen({
   const setupReady = Boolean(patent && claimCount > 0 && selectedIndexed.length > 0);
   const canStart =
     setupReady && !starting && !saving && providerReady && !awaitingConfirm && !selecting;
-  const activeTargets = awaitingConfirm ? chartTargets : selectedStandards;
   const canConfirm =
     Boolean(awaitingConfirm && decision && chartTargets.length > 0 && onConfirmTargets) &&
     !confirming &&
@@ -184,14 +207,14 @@ export default function SetupScreen({
   const recommendedId = decision?.target_document_id;
 
   const orderedStandards = useMemo(() => {
-    if (!awaitingConfirm || !decision?.candidates?.length) return standards;
+    if (!decision?.candidates?.length) return standards;
     const order = decision.candidates.map((c) => c.document_id);
     return [...standards].sort((a, b) => {
       const ai = order.indexOf(a.id);
       const bi = order.indexOf(b.id);
       return (ai < 0 ? 999 : ai) - (bi < 0 ? 999 : bi);
     });
-  }, [standards, awaitingConfirm, decision]);
+  }, [standards, decision]);
 
   return (
     <section className="setup-page">
@@ -302,34 +325,54 @@ export default function SetupScreen({
             </p>
 
             <div className="claims-under-patent">
-              <div className="claims-under-patent-head">
-                <h3>Claims to chart</h3>
-                <span className="meta-quiet">{claimCount} selected</span>
-              </div>
-              <div className="claim-chip-list">
-                {patent.claims.map((claim) => {
-                  const checked = selectedClaims.includes(claim.number);
-                  return (
-                    <label
-                      key={claim.number}
-                      className={`claim-chip ${checked ? "is-checked" : ""}`}
-                      title={claim.exact_text || claim.preview}
-                    >
-                      <input
-                        type="checkbox"
-                        checked={checked}
-                        disabled={locked}
-                        onChange={() => toggleClaim(claim.number)}
-                      />
-                      <span className="claim-chip-label">Claim {claim.number}</span>
-                      <span className="claim-chip-preview">
-                        {(claim.preview || claim.exact_text || "").slice(0, 88)}
-                        {(claim.preview || claim.exact_text || "").length > 88 ? "…" : ""}
-                      </span>
-                    </label>
-                  );
-                })}
-              </div>
+              <button
+                type="button"
+                className="claims-under-patent-head claims-disclosure"
+                aria-expanded={claimsOpen}
+                onClick={() => setClaimsOpen((open) => !open)}
+              >
+                <span className="claims-disclosure-title">
+                  {claimsOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                  Claims to chart
+                </span>
+                <span className="meta-quiet">
+                  {claimCount === 1 && selectedClaims[0] === 1
+                    ? "Claim 1 selected"
+                    : `${claimCount} selected`}
+                </span>
+              </button>
+              {!claimsOpen ? (
+                <p className="claims-collapsed-summary">
+                  {selectedClaims.length
+                    ? `Charting Claim ${selectedClaims.join(", Claim ")}. Expand to change selection.`
+                    : "No claims selected. Expand to choose claims."}
+                </p>
+              ) : (
+                <div className="claim-chip-list">
+                  {patent.claims.map((claim) => {
+                    const checked = selectedClaims.includes(claim.number);
+                    return (
+                      <label
+                        key={claim.number}
+                        className={`claim-chip ${checked ? "is-checked" : ""}`}
+                        title={claim.exact_text || claim.preview}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          disabled={locked}
+                          onChange={() => toggleClaim(claim.number)}
+                        />
+                        <span className="claim-chip-label">Claim {claim.number}</span>
+                        <span className="claim-chip-preview">
+                          {(claim.preview || claim.exact_text || "").slice(0, 88)}
+                          {(claim.preview || claim.exact_text || "").length > 88 ? "…" : ""}
+                        </span>
+                      </label>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           </>
         )}
@@ -340,11 +383,13 @@ export default function SetupScreen({
         <div className="standards-section-head">
           <h2>Select a standard</h2>
           <span className="meta-quiet">
-            {awaitingConfirm
-              ? decisionLoading
-                ? "Loading rationales…"
-                : `${chartTargets.length} selected for charting`
-              : `${selectedIndexed.length} selected for analysis`}
+            {selecting || decisionLoading
+              ? "Loading recommend / reject rationales…"
+              : showDecision
+                ? awaitingConfirm
+                  ? `${chartTargets.length} selected for charting`
+                  : "Latest recommend / reject rationales"
+                : `${selectedIndexed.length} selected for analysis`}
           </span>
         </div>
 
@@ -355,8 +400,13 @@ export default function SetupScreen({
               standard={standard}
               candidate={candidateById.get(standard.id)}
               recommended={standard.id === recommendedId}
-              awaitingConfirm={Boolean(awaitingConfirm)}
-              checked={activeTargets.includes(standard.id)}
+              showDecision={showDecision}
+              chartSelectable={Boolean(awaitingConfirm)}
+              checked={
+                awaitingConfirm
+                  ? chartTargets.includes(standard.id)
+                  : selectedStandards.includes(standard.id)
+              }
               expanded={Boolean(expanded[standard.id])}
               locked={locked && !awaitingConfirm}
               onToggleCheck={() =>
@@ -426,7 +476,8 @@ function StandardCard({
   standard,
   candidate,
   recommended,
-  awaitingConfirm,
+  showDecision,
+  chartSelectable,
   checked,
   expanded,
   locked,
@@ -437,7 +488,8 @@ function StandardCard({
   standard: StandardRecord;
   candidate?: CandidateDecision;
   recommended: boolean;
-  awaitingConfirm: boolean;
+  showDecision: boolean;
+  chartSelectable: boolean;
   checked: boolean;
   expanded: boolean;
   locked: boolean;
@@ -445,17 +497,32 @@ function StandardCard({
   onToggleExpand: () => void;
   onView: () => void;
 }) {
-  const disabled = locked || (!awaitingConfirm && standard.status !== "indexed");
+  const disabled = locked || (!chartSelectable && standard.status !== "indexed");
+  const disposition = candidate?.disposition;
+  const rejected = Boolean(
+    showDecision && (disposition === "rejected" || (!recommended && disposition !== "selected"))
+  );
+  const isRecommended = Boolean(
+    showDecision && (recommended || disposition === "selected")
+  );
+  const fallbackReject =
+    standard.family === "G.722.2"
+      ? "Rejected for Claim 1 charting: G.722.2 is an AMR-WB wideband speech codec. The claim is directed to an encoding apparatus that sets chroma QP (0–51) from luma QP plus a picture-level chroma QP offset and quantizes transform data — video coding subject matter, not speech coding. A speech-codec specification cannot supply normative clauses that map those claim elements."
+      : standard.family === "TS 136 211"
+        ? "Rejected for Claim 1 charting: TS 136 211 defines LTE/E-UTRA physical channels and modulation. It does not specify HEVC/video chroma QP derivation, picture-level chroma QP offsets, or transform-coefficient quantization of the kind claimed. Cellular PHY text is the wrong domain for this claim chart."
+        : `Rejected for Claim 1 charting: ${standard.family} is not a suitable primary standard for the claimed video-coding / chroma QP subject matter.`;
   const rationale =
-    candidate?.rationale ||
-    (!awaitingConfirm
+    candidate?.rationale?.trim() ||
+    (!showDecision
       ? standard.summary || standard.title
-      : "No rationale returned for this candidate.");
+      : rejected
+        ? fallbackReject
+        : "No rationale returned for this candidate.");
   const proofs = candidate?.proofs || [];
-  const badge = awaitingConfirm
-    ? recommended
+  const badge = showDecision
+    ? isRecommended
       ? { className: "badge badge-success", label: "Recommended" }
-      : { className: "badge badge-muted", label: "Alternative" }
+      : { className: "badge badge-danger", label: "Rejected" }
     : {
         className:
           standard.status === "indexed" ? "badge badge-neutral" : "badge badge-warn",
@@ -465,8 +532,8 @@ function StandardCard({
   return (
     <article
       className={`standard-select-card ${checked ? "is-checked" : ""} ${
-        recommended && awaitingConfirm ? "is-recommended" : ""
-      }`}
+        isRecommended ? "is-recommended" : ""
+      } ${rejected ? "is-rejected" : ""}`}
     >
       <div className="standard-select-card-top">
         <label className="standard-select-check">
@@ -490,12 +557,21 @@ function StandardCard({
         <span className={badge.className}>{badge.label}</span>
       </div>
 
-      <p className="standard-rationale">{rationale}</p>
+      {showDecision ? (
+        <div className="rationale-block">
+          <div className="rationale-label">
+            {isRecommended ? "Why recommended" : "Why rejected"}
+          </div>
+          <p className="standard-rationale">{rationale}</p>
+        </div>
+      ) : (
+        <p className="standard-rationale">{rationale}</p>
+      )}
 
       <div className="standard-card-footer">
         <button type="button" className="source-toggle" onClick={onToggleExpand}>
           {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-          {awaitingConfirm ? "Source excerpts" : "Document details"}
+          {showDecision ? "Source excerpts" : "Document details"}
         </button>
         <div className="doc-actions">
           <button type="button" className="btn btn-ghost" onClick={onView}>
@@ -514,7 +590,7 @@ function StandardCard({
 
       {expanded ? (
         <div className="source-excerpts">
-          {awaitingConfirm ? (
+          {showDecision ? (
             proofs.length ? (
               proofs.map((proof, index) => (
                 <div key={`${standard.id}-proof-${index}`} className="source-excerpt">

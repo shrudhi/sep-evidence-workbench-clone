@@ -75,12 +75,37 @@ product shell and missing contracts toward the three-screen Clause UX.
 - [ ] Restart persistence; Dockerfile/README/health
 - [ ] Milestone reports with measured usage only when available
 
+## AI Review (simplified) — 2026-11-18
+
+### What the review agent checks
+1. Quote exists verbatim in the cited source  
+2. Screenshot matches the quote  
+3. Standard version and section are right  
+4. Mapping label is consistent with the rationale  
+
+### Overall statuses (exactly four)
+| Status | Meaning |
+|---|---|
+| **Passed** | Mapping + evidence satisfy the checks |
+| **Needs Review - Correction** | Specific fix recommended (label / rationale / remove cite) — **Apply recommended fix** one-click |
+| **Review Incomplete** | Tech/model error; review did not finish |
+| **Needs Review - Ambiguous** | Evidence needs human judgment |
+
+### Completed
+- [x] Four statuses above (+ compact four checks)
+- [x] One-click `POST /api/rows/{id}/ai-review/apply-fix` → new revision, `ops_audit_events` + trace with analyst name
+- [x] Versioned `ai_review_runs` / history; auto-run after map/challenge/edit; manual rerun
+- [x] Panel: View Evidence, Ask Agent, Edit, Request Revision, Apply fix, Rerun
+- [x] Unit tests: `backend/tests/test_ai_review.py`
+
+### Remaining limitations
+- [ ] Screenshot “match” is link/highlight based (not always-on vision OCR)
+- [ ] Notes/threads tab still secondary on Path A charts
+
 ## Current blockers
 
-1. **Model provider** — missing `MODEL_API_KEY`, `MAPPER_MODEL`, `REVIEWER_MODEL`.
-2. **Product UI gap** — current UI is a single workbench page, not the three-screen Clause shell.
-3. **API gaps vs brief** — notes/threads, patent-input adapter, per-document run charts,
-   report revisions, project persistence endpoints still needed or need reshaping.
+1. **Public demo / video / form links** — still external to the repo.
+2. **Notes/threads** — stub; not required for AI Review completion criteria above.
 
 ## Next concrete step after M0
 
