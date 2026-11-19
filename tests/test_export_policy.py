@@ -31,10 +31,23 @@ def test_incomplete_corpus_blocks_reviewed_final():
         )
 
 
-def test_complete_corpus_still_requires_all_decisions():
-    with pytest.raises(ValueError, match="analyst decision"):
+def test_complete_corpus_still_requires_review_ready_rows():
+    with pytest.raises(ValueError, match="AI Review Passed"):
         resolve_export_designation(
             requested_final=True,
             all_decided=False,
+            all_review_ready=False,
             corpus={"complete": True, "missing_standard_ids": []},
         )
+
+
+def test_final_allowed_when_review_ready_even_if_not_all_decided():
+    assert (
+        resolve_export_designation(
+            requested_final=True,
+            all_decided=False,
+            all_review_ready=True,
+            corpus={"complete": True, "missing_standard_ids": []},
+        )
+        == "REVIEWED FINAL"
+    )

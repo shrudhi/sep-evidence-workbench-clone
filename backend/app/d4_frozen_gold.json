@@ -1,0 +1,38 @@
+[
+  {
+    "id": "1[a]",
+    "exact_text": "An encoding apparatus, comprising: circuitry configured to:",
+    "expected_label": "Partial map",
+    "anchor_clauses": "\u00a73.53\u20133.54; \u00a70.7; \u00a73.145",
+    "pages": "Printed 3, 7, 11 / PDF 21, 25, 29",
+    "how_decided": "[E01 \u00a73.53] defines an encoder as an embodiment of an encoding process, giving partial contextual support. [E01 \u00a73.54] and [E02 \u00a70.7] explicitly leave encoding algorithms/processes unspecified. [E03 \u00a73.145 NOTE] notes encoder responsibility for bitstream conformance, but H.265 does not mandate dedicated hardware circuitry configured for 1[b]+1[c]. Under the partial-support policy, this is Partial map.",
+    "gaps": "Mandatory hardware circuitry implementation; specified encoding algorithms configured for combined operations in 1[b] and 1[c].",
+    "edition": "ITU-T H.265 V10 (07/2024)",
+    "complete_quote": "[E01 \u00a73.53\u20133.54 (p.7 / PDF 25)]: 3.53 encoder: An embodiment of an encoding process. 3.54 encoding process: A process not specified in this Specification that produces a bitstream conforming to this Specification.\n[E02 \u00a70.7 (p.3 / PDF 21)]: Encoding algorithms (not specified in this Recommendation | International Standard) may select between inter and intra coding for block-shaped regions of each picture.\n[E03 \u00a73.145 (p.11 / PDF 29)]: NOTE \u2013 When used to express a mandatory constraint on the values of syntax elements or on the results obtained by operation of the specified decoding process, it is the responsibility of the encoder to ensure that the constraint is fulfilled.",
+    "screenshot_ref": "gold_1a_sec3_53_and_0_7.png"
+  },
+  {
+    "id": "1[b]",
+    "exact_text": "set a chroma quantization parameter (QP) included in a chroma QP range from 0 to 51 equal to a luma QP range, based on a parameter including a picture level chroma QP offset added to a luma QP; and",
+    "expected_label": "Partial map",
+    "anchor_clauses": "\u00a77.4.3.3.1; \u00a78.6.1 (Eq. 8-285..290, Table 8-10); \u00a77.4.3.2.1",
+    "pages": "Printed 76, 83, 176 / PDF 94, 101, 194",
+    "how_decided": "[E04 \u00a77.4.3.3.1] defines pps_cb_qp_offset/pps_cr_qp_offset (-12..+12). [E05 \u00a78.6.1] Eq. (8-285)/(8-286) add PPS chroma offsets to QpY and map qPi (clipped to 57) into QpC 0\u201351 (via Table 8-10 where 57\u22126=51 for 4:2:0, or Min(qPi,51) otherwise). [E06 \u00a77.4.3.2.1] Eq. (7-7) yields QpBdOffsetC=0 at 8-bit depth. Partial map (not Full) because Clause 8 specifies conditional decoding derivation rather than mandatory encoder circuitry.",
+    "gaps": "Mandatory encoder-side derivation (Clause 8 specifies decoding process); unconditional 0\u201351 range across >8-bit depths (QpBdOffsetC > 0) and ACT modes.",
+    "edition": "ITU-T H.265 V10 (07/2024)",
+    "complete_quote": "[E04 \u00a77.4.3.3.1 (p.83 / PDF 101)]: pps_cb_qp_offset and pps_cr_qp_offset specify the offsets to the luma quantization parameter Qp\u2032Y used for deriving Qp\u2032Cb and Qp\u2032Cr, respectively. The values of pps_cb_qp_offset and pps_cr_qp_offset shall be in the range of \u221212 to +12, inclusive.\n[E05 \u00a78.6.1 (p.176 / PDF 194)]: qPiCb = Clip3( \u2212QpBdOffsetC, 57, QpY + pps_cb_qp_offset + slice_cb_qp_offset + CuQpOffsetCb ) (8-285) ... If ChromaArrayType is equal to 1, qPCb and qPCr are set equal to QpC in Table 8-10 (where qPi > 43 -> QpC = qPi \u2212 6, so 57 -> 51); otherwise Min(qPi, 51).\n[E06 \u00a77.4.3.2.1 (p.76 / PDF 94)]: QpBdOffsetC = 6 * bit_depth_chroma_minus8 (7-7).",
+    "screenshot_ref": "gold_1b_sec8_6_1_table8_10.png"
+  },
+  {
+    "id": "1[c]",
+    "exact_text": "quantize transform data that is orthogonal-transformed from a picture, based on the set chroma QP to generate quantized data.",
+    "expected_label": "Partial map",
+    "anchor_clauses": "\u00a70.7; \u00a78.6.2 (Eq. 8-292..293); \u00a73.53\u20133.54",
+    "pages": "Printed 3, 7, 177 / PDF 21, 25, 195",
+    "how_decided": "[E07 \u00a70.7] confirms prediction residual is compressed using a transform before quantization, providing genuine partial functional support in permissive introductory text. [E08 \u00a78.6.2] Eq. (8-292)/(8-293) show chroma QPs (Qp\u2032Cb, Qp\u2032Cr) governing transform coefficient scaling (qP = Qp\u2032Cb / Qp\u2032Cr). Partial map because forward encoder quantization circuitry and explicit orthogonal transform mandates are not specified.",
+    "gaps": "Explicit orthogonal transform specification in normative text; mandatory forward encoder quantization step using the exact QP set in 1[b].",
+    "edition": "ITU-T H.265 V10 (07/2024)",
+    "complete_quote": "[E07 \u00a70.7 (p.3 / PDF 21)]: The prediction residual may then be further compressed using a transform to remove spatial correlation inside the transform block before it is quantized, producing a possibly irreversible process that typically discards less important visual information while forming a close approximation to the source samples.\n[E08 \u00a78.6.2 (p.177 / PDF 195)]: Otherwise, if cIdx is equal to 1, the following applies: qP = Qp\u2032Cb (8-292) \u2013 Otherwise (cIdx is equal to 2), the following applies: qP = Qp\u2032Cr (8-293).",
+    "screenshot_ref": "gold_1c_sec0_7_and_8_6_2.png"
+  }
+]

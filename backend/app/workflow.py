@@ -485,17 +485,177 @@ def _validate_coverage(claim: str, elements: list[ElementOutput]) -> None:
         raise ValueError(f"Claim decomposition omitted substantive text: {uncovered[:100]}")
 
 
-def _decompose_node(state: WorkflowState) -> WorkflowState:
-    run_id = state["run_id"]
-    claim = state["claim_text"]
+def _normalize_claim_ocr(claim: str) -> str:
+    """Clean PDF/OCR spacing artifacts without changing claim words."""
+    text = " ".join((claim or "").split())
+    # (Q P ) / ( Q P) -> (QP)
+    text = re.sub(r"\(\s*([A-Za-z])\s+([A-Za-z])\s*\)", r"(\1\2)", text)
+    # orthogonal - transformed -> orthogonal-transformed
+    text = re.sub(r"(\w)\s+-\s+(\w)", r"\1-\2", text)
+    # Soft-join common OCR splits
+    text = re.sub(r"\bQ\s+P\b", "QP", text)
+    text = re.sub(r"\bcir\s+cuitry\b", "circuitry", text, flags=re.I)
+    return text
+
+
+_PREAMBLE_END = re.compile(
+    r"(?:"
+    r"comprising\s*:\s*circuitry\s+configured\s+to\s*:"
+    r"|circuitry\s+configured\s+to\s*:"
+    r"|configured\s+to\s*:"
+    r"|comprising\s*:"
+    r")",
+    re.IGNORECASE,
+)
+
+# Major functional verbs that start a new limitation (not modifiers after commas).
+_FUNCTIONAL_SPLIT = re.compile(
+    r"(?:;\s*and\s+|(?<=;\s)|(?<=:\s))"
+    r"(?="
+    r"set\s+|quantize\s+|receive\s+|determine\s+|generate\s+|output\s+|"
+    r"encode\s+|decode\s+|derive\s+|calculate\s+|select\s+|apply\s+|provide\s+"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def _deterministic_sep_decompose(claim: str) -> list[ElementOutput] | None:
+    """
+    Strict SEP chart grain:
+    1[a] = preamble + transitional phrase (keep 'comprising:' / 'configured to:' intact)
+    later rows = functional verb limitations (do not split comma modifiers).
+    """
+    text = _normalize_claim_ocr(claim)
+    if len(text) < 40:
+        return None
+    match = _PREAMBLE_END.search(text)
+    if not match:
+        return None
+    preamble = text[: match.end()].strip()
+    body = text[match.end() :].strip()
+    # Strip a single leading connector from the first body clause only.
+    body = re.sub(r"^(and|or)\s+", "", body, flags=re.I)
+    if not preamble or not body:
+        return None
+
+    parts: list[str] = []
+    cursor = 0
+    for split in _FUNCTIONAL_SPLIT.finditer(body):
+        at = split.start()
+        if at <= cursor:
+            continue
+        chunk = body[cursor:at].strip()
+        if chunk:
+            parts.append(chunk)
+        cursor = at
+        # drop leading "; and " / "; " consumed by the split pattern start
+        connector = split.group(0)
+        if connector:
+            cursor = split.end() if split.group(0).endswith(" ") else split.start()
+            # Prefer advancing past "; and " / "; "
+            mconn = re.match(r";\s*(?:and\s+)?", body[split.start() :], re.I)
+            if mconn:
+                cursor = split.start() + mconn.end()
+    tail = body[cursor:].strip()
+    if tail:
+        parts.append(tail)
+    # Fallback: split once on "; and "
+    if len(parts) < 2:
+        parts = [p.strip() for p in re.split(r";\s*and\s+", body, flags=re.I) if p.strip()]
+    if len(parts) < 1:
+        return None
+
+    segments = [preamble, *parts]
+    # Rebuild contiguous spans from the normalized claim text.
+    elements: list[ElementOutput] = []
+    search_from = 0
+    for index, segment in enumerate(segments):
+        exact = segment.strip()
+        # Keep trailing "; and" on the penultimate body clause when present in claim.
+        if index == 0:
+            start = 0
+            end = len(preamble)
+            exact = text[start:end]
+        else:
+            start = text.find(exact, search_from)
+            if start < 0:
+                start, end = _find_claim_span(text, exact, cursor=search_from)
+                exact = text[start:end]
+            else:
+                end = start + len(exact)
+            # Absorb preceding "; and " / whitespace into previous element already covered;
+            # absorb leading junk into this span if needed.
+            if start > search_from:
+                gap = text[search_from:start]
+                if re.fullmatch(r"[\s,;:.]*((and|or)\s*)?", gap, re.I):
+                    # leave gap uncovered then let reconcile absorb — attach to previous
+                    if elements and re.fullmatch(r"[\s,;:.]*((and|or)\s*)?", gap, re.I):
+                        prev = elements[-1]
+                        elements[-1] = prev.model_copy(
+                            update={
+                                "exact_text": text[prev.start_offset : start],
+                                "end_offset": start,
+                            }
+                        )
+        search_from = end
+        label = "preamble" if index == 0 else f"limitation_{index}"
+        category: Literal["actor", "operation", "input", "relationship", "range", "condition"]
+        category = "actor" if index == 0 else "operation"
+        elements.append(
+            ElementOutput(
+                label=label,
+                exact_text=exact if index == 0 else text[start:end],
+                start_offset=start if index > 0 else 0,
+                end_offset=end if index > 0 else len(preamble),
+                requirements=[Requirement(text=exact[:180], category=category)],
+            )
+        )
+    # Fix first element offsets explicitly
+    elements[0] = elements[0].model_copy(
+        update={"exact_text": text[: elements[0].end_offset], "start_offset": 0}
+    )
+    # Extend last element through end of claim (trailing period).
+    if elements and elements[-1].end_offset < len(text):
+        trailing = text[elements[-1].end_offset :]
+        if re.fullmatch(r"[\s,;:.]*", trailing) or trailing.strip() in {".", ";"}:
+            last = elements[-1]
+            elements[-1] = last.model_copy(
+                update={
+                    "exact_text": text[last.start_offset :],
+                    "end_offset": len(text),
+                }
+            )
+    try:
+        reconciled = _reconcile_element_offsets(text, elements)
+        _validate_coverage(text, reconciled)
+    except ValueError:
+        return None
+    # Guard: do not accept comma-chopped fine splits from a bad deterministic path.
+    if len(reconciled) > 6:
+        return None
+    return reconciled
+
+
+def _llm_decompose_claim(claim: str, run_id: str) -> tuple[list[ElementOutput], Any]:
     provider = OpenAICompatibleProvider()
     result = provider.structured(
         purpose="decompose_claim",
         system=(
-            "Partition the exact claim text into reviewable elements without paraphrasing or dropping "
-            "conditions. exact_text MUST be copied verbatim from claim_1. Offsets are zero-based, "
-            "end-exclusive Python string offsets into claim_1. Categorize each requirement as actor, "
-            "operation, input, relationship, range, or condition. Return JSON only."
+            "You are a Patent Litigation Claim Parser for SEP claim charts. "
+            "Partition claim_1 into discrete legally meaningful elements without paraphrasing.\n"
+            "STRICT SEGMENTATION RULES:\n"
+            "1) Keep the preamble intact as the first element: group apparatus/method preamble and "
+            "transitional phrase together (e.g. 'An encoding apparatus, comprising: circuitry "
+            "configured to:'). Never split ', comprising:' or 'configured to:' onto a separate row.\n"
+            "2) Split the body ONLY at major functional verb limitations (semicolons / independent "
+            "verb clauses such as 'set a chroma quantization parameter...' and 'quantize transform "
+            "data...'). Do NOT isolate dependent participial phrases or modifiers (never separate "
+            "'included in a chroma QP range...' or 'equal to a luma QP range' from the verb 'set').\n"
+            "3) Prefer few elements (typically 2–4 for a single apparatus claim), not comma-grained "
+            "fragments. Target ~3 elements for Claim 1 style encoding-apparatus claims.\n"
+            "exact_text MUST be copied verbatim from claim_1. Offsets are zero-based, end-exclusive "
+            "Python string offsets into claim_1. Categorize each requirement as actor, operation, "
+            "input, relationship, range, or condition. Return JSON only."
         ),
         payload={
             "claim_1": claim,
@@ -510,6 +670,22 @@ def _decompose_node(state: WorkflowState) -> WorkflowState:
                         "requirements": [{"text": "atomic requirement", "category": "operation"}],
                     }
                 ]
+            },
+            "examples": {
+                "good_grain": [
+                    "An encoding apparatus, comprising: circuitry configured to:",
+                    "set a chroma quantization parameter (QP) included in a chroma QP range "
+                    "from 0 to 51 equal to a luma QP range, based on a parameter including a "
+                    "picture level chroma QP offset added to a luma QP; and",
+                    "quantize transform data that is orthogonal-transformed from a picture, "
+                    "based on the set chroma QP to generate quantized data.",
+                ],
+                "bad_grain": [
+                    "An encoding apparatus",
+                    ", comprising:",
+                    "included in a chroma QP range from 0 to 51",
+                    "equal to a luma QP range",
+                ],
             },
         },
         run_id=run_id,
@@ -541,6 +717,26 @@ def _decompose_node(state: WorkflowState) -> WorkflowState:
     parsed = DecompositionOutput.model_validate({"elements": normalized_elements})
     reconciled = _reconcile_element_offsets(claim, parsed.elements)
     _validate_coverage(claim, reconciled)
+    # Reject known-bad fine splits from the model when deterministic rules can do better later.
+    return reconciled, result
+
+
+def _decompose_node(state: WorkflowState) -> WorkflowState:
+    run_id = state["run_id"]
+    claim = _normalize_claim_ocr(state["claim_text"])
+    decompose_method = "deterministic_sep"
+    result: Any = None
+    reconciled = _deterministic_sep_decompose(claim)
+    if reconciled is None:
+        decompose_method = "llm_sep_rules"
+        reconciled, result = _llm_decompose_claim(claim, run_id)
+    # Prefer deterministic grain if LLM returned a comma-fine split.
+    if decompose_method == "llm_sep_rules" and len(reconciled) > 5:
+        fallback = _deterministic_sep_decompose(claim)
+        if fallback is not None:
+            reconciled = fallback
+            decompose_method = "deterministic_sep_override"
+
     from .projects import get_snapshot
 
     snapshot = get_snapshot(run_id)
@@ -549,6 +745,11 @@ def _decompose_node(state: WorkflowState) -> WorkflowState:
         claim_number = int(snapshot["selected_claims"][0].get("number") or 1)
     elements: list[dict[str, Any]] = []
     with transaction() as connection:
+        # Persist OCR-normalized claim text used for offsets.
+        connection.execute(
+            "UPDATE runs SET claim_text=?, updated_at=? WHERE id=?",
+            (claim, utcnow(), run_id),
+        )
         for ordinal, element in enumerate(reconciled, start=1):
             element_id = str(uuid.uuid4())
             # Assignment IDs are 1[a], 1[b], … — keep semantic categories on requirements only.
@@ -581,15 +782,34 @@ def _decompose_node(state: WorkflowState) -> WorkflowState:
             "UPDATE runs SET status=?,updated_at=? WHERE id=?",
             ("mapping", utcnow(), run_id),
         )
-        _model_event(
-            connection,
-            run_id,
-            "decomposing",
-            "decompose_claim",
-            result,
-            {"element_count": len(elements), "coverage": "complete"},
-        )
-    return {"elements": elements, "status": "mapping"}
+        if result is not None:
+            _model_event(
+                connection,
+                run_id,
+                "decomposing",
+                "decompose_claim",
+                result,
+                {
+                    "element_count": len(elements),
+                    "coverage": "complete",
+                    "method": decompose_method,
+                },
+            )
+        else:
+            add_trace(
+                connection,
+                run_id=run_id,
+                event_type="decompose_claim",
+                state="decomposing",
+                tool_name="deterministic_sep_parser",
+                result={
+                    "element_count": len(elements),
+                    "coverage": "complete",
+                    "method": decompose_method,
+                    "labels": [item["label"] for item in elements],
+                },
+            )
+    return {"elements": elements, "status": "mapping", "claim_text": claim}
 
 
 def _quote_located_in_page(page_text: str, quote: str) -> tuple[bool, int, int]:
@@ -1548,7 +1768,14 @@ def confirm_target_documents(
         ).fetchone()
     if not row:
         raise KeyError("Unknown run")
-    if row["status"] != "awaiting_target_confirm":
+    model_config = json.loads(row["model_config_json"] or "{}")
+    selection_only = bool(model_config.get("selection_only"))
+    # Allow Create Chart from an in-progress confirm pause OR a finished selection-only
+    # run that still has recommend/reject rationales (Setup no longer forces a re-screen).
+    allowed_status = row["status"] in ("awaiting_target_confirm", "complete") and (
+        row["status"] == "awaiting_target_confirm" or selection_only
+    )
+    if not allowed_status:
         raise ValueError(
             f"Run is not awaiting target confirmation (status={row['status']})"
         )
@@ -1560,10 +1787,7 @@ def confirm_target_documents(
     }
     if not allowed:
         allowed = set(
-            json.loads(row["model_config_json"] or "{}")
-            .get("corpus", {})
-            .get("indexed_standard_ids")
-            or []
+            model_config.get("corpus", {}).get("indexed_standard_ids") or []
         )
     unknown = [item for item in ids if item not in allowed]
     if unknown:

@@ -14,19 +14,19 @@ export const WORKFLOW_STEPS: WorkflowStepDef[] = [
     id: "setup",
     label: "Setup",
     shortLabel: "1",
-    description: "Patent, claims, and target standard"
+    description: "Choose the patent and confirm which standard to chart"
   },
   {
     id: "charts",
-    label: "Claim Charts",
+    label: "Claim charts",
     shortLabel: "2",
-    description: "Map evidence and decide Full / Partial / No"
+    description: "Review evidence, challenge rows, then accept or reject"
   },
   {
     id: "sep_report",
-    label: "Report",
+    label: "SEP report",
     shortLabel: "3",
-    description: "Download the created SEP claim chart report"
+    description: "Download draft or reviewed-final claim chart"
   }
 ];
 

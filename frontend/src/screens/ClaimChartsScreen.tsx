@@ -1,17 +1,40 @@
 import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
+import {
+  BadgeCheck,
+  Ban,
+  Bot,
+  CheckCircle2,
+  ChevronDown,
+  ChevronRight,
+  UserRound
+} from "lucide-react";
 import { api } from "../api";
-import AiReviewPanel, {
-  aiReviewStatusKind,
-  aiReviewStatusLabel
-} from "../components/AiReviewPanel";
+import AiReviewPanel from "../components/AiReviewPanel";
 import AskAgentPanel from "../components/AskAgentPanel";
+import ChartMappingCell from "../components/ChartMappingCell";
 import ClaimEditModal from "../components/ClaimEditModal";
 import DocumentViewer, { type ViewerLocation } from "../components/DocumentViewer";
 import EvidencePassageList from "../components/EvidencePassageList";
+import HelpTooltip from "../components/HelpTooltip";
+import InlineSpinner from "../components/InlineSpinner";
 import JudgePanel from "../components/JudgePanel";
 import NotesPanel from "../components/NotesPanel";
-import StatusChip, { mappingLabelKind } from "../components/StatusChip";
+import RejectConfirmModal from "../components/RejectConfirmModal";
+import RevisionLogModal from "../components/RevisionLogModal";
+import SkeletonBlock from "../components/SkeletonBlock";
 import { preferredBbox } from "../evidenceLabels";
+import {
+  DEFAULT_CHART_FILTERS,
+  analystDispositionLabel,
+  chartFiltersAreDefault,
+  chartReadinessCounts,
+  rowAttentionBucket,
+  rowMatchesChartFilters,
+  type AnalystStatusFilter,
+  type AutoReviewFilter,
+  type ChartFilters,
+  type UpdatedByFilter
+} from "../reviewReadiness";
 import type { Chart, ChartRevision, EvidenceBlock, RunSummary, SetupBundle } from "../types";
 
 type InspectorTab = "evidence" | "judge" | "notes";
@@ -79,24 +102,6 @@ function latestRevision(row: Chart["rows"][number]): ChartRevision | undefined {
   return row.revisions.at(-1);
 }
 
-/** Assignment review-agent outcome for a row (Passed / sent back / flagged). */
-function reviewAgentLabel(revision: ChartRevision | undefined): string | null {
-  if (!revision) return null;
-  if (revision.mapping_review_status) return revision.mapping_review_status;
-  const disposition = revision.review_disposition;
-  if (disposition === "pass") return "Passed review";
-  if (disposition === "rework") return "Sent back for rework";
-  if (disposition === "flag") return "Flagged for analyst";
-  const decision = revision.judge?.overall_decision;
-  if (decision === "Passed checks") return "Passed review";
-  if (decision === "Failed checks" || decision === "Failed") return "Failed review";
-  if (decision === "Needs analyst review" || decision === "Needs review") {
-    return "Flagged for analyst";
-  }
-  if (decision === "Review incomplete") return "Review incomplete";
-  return revision.review_id ? "Review pending" : null;
-}
-
 export default function ClaimChartsScreen({
   setup,
   runs,
@@ -113,6 +118,8 @@ export default function ClaimChartsScreen({
     "Rationale overstates support — re-check normative clauses and tighten Partial gaps."
   );
   const [actionBusy, setActionBusy] = useState(false);
+  /** When set, only that revision's Accept/Reject show as busy — not the whole chart. */
+  const [busyRevisionId, setBusyRevisionId] = useState<string | null>(null);
   const [actionNotice, setActionNotice] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [inspectorTab, setInspectorTab] = useState<InspectorTab | null>(null);
@@ -120,6 +127,16 @@ export default function ClaimChartsScreen({
   const [passageIndex, setPassageIndex] = useState(0);
   const [expandedDoc, setExpandedDoc] = useState(false);
   const [selectedFinding, setSelectedFinding] = useState<string | null>(null);
+  const [chartFilters, setChartFilters] = useState<ChartFilters>(DEFAULT_CHART_FILTERS);
+  const [rejectTarget, setRejectTarget] = useState<{
+    rowId: string;
+    revisionId: string;
+    label: string;
+  } | null>(null);
+  const [revisionLogTarget, setRevisionLogTarget] = useState<{
+    rowId: string;
+    label: string;
+  } | null>(null);
   const [askAgentOpen, setAskAgentOpen] = useState(false);
   const [askAgentSeed, setAskAgentSeed] = useState<string | null>(null);
   const [askAgentPreferredElementId, setAskAgentPreferredElementId] = useState<string | null>(
@@ -128,8 +145,10 @@ export default function ClaimChartsScreen({
   const [askAgentUi, setAskAgentUi] = useState<{
     historyOpen: boolean;
     layout: "normal" | "minimized" | "maximized";
-  }>({ historyOpen: false, layout: "normal" });
+    position: { left: number; top: number } | null;
+  }>({ historyOpen: false, layout: "normal", position: null });
   const [editOpen, setEditOpen] = useState(false);
+  const [collapsedRows, setCollapsedRows] = useState<Record<string, boolean>>({});
   const [reviewWidth, setReviewWidth] = useState(() => {
     const stored = Number(window.localStorage.getItem(REVIEW_WIDTH_KEY) || "");
     if (Number.isFinite(stored) && stored >= REVIEW_WIDTH_MIN && stored <= REVIEW_WIDTH_MAX) {
@@ -249,6 +268,19 @@ export default function ClaimChartsScreen({
   const building = Boolean(chart && IN_FLIGHT.has(chart.run.status));
   const ready = Boolean(chart && READY.has(chart.run.status));
 
+  const readiness = useMemo(
+    () => chartReadinessCounts(chart?.rows || []),
+    [chart?.rows]
+  );
+  const filteredRows = useMemo(() => {
+    const rows = chart?.rows || [];
+    return rows.filter((row) => rowMatchesChartFilters(row, chartFilters));
+  }, [chart?.rows, chartFilters]);
+  const filterIsEmpty =
+    Boolean(chart?.rows?.length) &&
+    !chartFiltersAreDefault(chartFilters) &&
+    filteredRows.length === 0;
+
   const selectedChartRow = chart?.rows.find((row) => row.id === selectedRow);
   const selectedRevision = selectedChartRow ? latestRevision(selectedChartRow) : undefined;
 
@@ -325,6 +357,12 @@ export default function ClaimChartsScreen({
     if (selectedChartRow) openAskAgentForRow(selectedChartRow.id);
   };
 
+  // Clear stuck busy if the chart refreshed (e.g. API was down mid-action).
+  useEffect(() => {
+    setActionBusy(false);
+    setBusyRevisionId(null);
+  }, [chart?.run.id, chart?.rows?.length]);
+
   const runRowAction = async (
     label: string,
     work: () => Promise<unknown>,
@@ -333,6 +371,7 @@ export default function ClaimChartsScreen({
     const revisionId = options?.revisionId || selectedRevision?.id;
     if (!revisionId) return;
     setActionBusy(true);
+    setBusyRevisionId(revisionId);
     setActionError(null);
     setActionNotice(`${label}…`);
     try {
@@ -348,6 +387,7 @@ export default function ClaimChartsScreen({
       setActionNotice(null);
     } finally {
       setActionBusy(false);
+      setBusyRevisionId(null);
     }
   };
 
@@ -379,8 +419,9 @@ export default function ClaimChartsScreen({
         <div>
           <h1 className="page-title-compact">Claim charts</h1>
           <p className="page-sub-compact">
-            Assignment SEP chart: one row per claim element — claim text, verbatim quote with
-            source and screenshot, then Full map / Partial map / No map with rationale.
+            Review AI evidence, challenge rows that need work, then accept or reject each element.
+            Draft Word is available anytime; reviewed final unlocks after every row has an analyst
+            decision.
           </p>
         </div>
         <div className="page-header-actions">
@@ -390,7 +431,7 @@ export default function ClaimChartsScreen({
                 type="button"
                 className="btn btn-primary"
                 onClick={openAskAgentGlobal}
-                disabled={!chart?.run.target_document_id}
+                disabled={!chart?.run.target_document_id || actionBusy}
               >
                 Ask agent
               </button>
@@ -399,14 +440,25 @@ export default function ClaimChartsScreen({
                 href={`/api/runs/${activeRunId}/export?final=false`}
                 target="_blank"
                 rel="noreferrer"
-                title="Download draft Word claim chart (.docx) for this run — claim element · evidence · rationale. For reviewed final and delivery bundle, open SEP Report."
+                title="Download a watermarked draft Word chart. Use SEP report for the reviewed final."
               >
-                Download draft chart
+                Download draft
               </a>
             </>
           ) : null}
-          <button type="button" className="btn btn-ghost" onClick={() => onRefreshChart()}>
-            Refresh
+          <button
+            type="button"
+            className="btn btn-ghost"
+            disabled={actionBusy}
+            onClick={() => void onRefreshChart()}
+          >
+            {actionBusy ? (
+              <>
+                <InlineSpinner label="Refreshing chart" /> Refreshing…
+              </>
+            ) : (
+              "Refresh chart"
+            )}
           </button>
         </div>
       </div>
@@ -433,12 +485,162 @@ export default function ClaimChartsScreen({
         </div>
       ) : null}
 
+      {chart?.rows?.length ? (
+        <div className="chart-attention-bar">
+          <div className="chart-attention-counts" aria-label="Review readiness summary">
+            <button
+              type="button"
+              className={`chart-count-chip ${
+                chartFilters.autoReview === "all" && chartFilters.status === "all" ? "is-active" : ""
+              }`}
+              title="Show all claim elements"
+              onClick={() =>
+                setChartFilters((prev) => ({
+                  ...prev,
+                  autoReview: "all",
+                  status: "all"
+                }))
+              }
+            >
+              <strong>{readiness.total}</strong> All
+            </button>
+            <button
+              type="button"
+              className={`chart-count-chip ${chartFilters.status === "completed" ? "is-active" : ""}`}
+              title="Filter: Analyst review completed (Accepted or Rejected)"
+              onClick={() =>
+                setChartFilters((prev) => ({
+                  ...prev,
+                  autoReview: "all",
+                  status: prev.status === "completed" ? "all" : "completed"
+                }))
+              }
+            >
+              <strong>{readiness.analyst_done}</strong> Analyst review completed
+            </button>
+            <button
+              type="button"
+              className={`chart-count-chip ${chartFilters.status === "review_pending" ? "is-active" : ""}`}
+              title="Filter: Analyst review pending"
+              onClick={() =>
+                setChartFilters((prev) => ({
+                  ...prev,
+                  autoReview: "all",
+                  status: prev.status === "review_pending" ? "all" : "review_pending"
+                }))
+              }
+            >
+              <strong>{readiness.analyst_review_pending}</strong> Analyst review pending
+            </button>
+            <button
+              type="button"
+              className={`chart-count-chip ${chartFilters.autoReview === "need_review" ? "is-active" : ""}`}
+              title="Filter: AI- Need Review"
+              onClick={() =>
+                setChartFilters((prev) => ({
+                  ...prev,
+                  status: "all",
+                  autoReview: prev.autoReview === "need_review" ? "all" : "need_review"
+                }))
+              }
+            >
+              <strong>{readiness.auto_need_review}</strong> AI- Need Review
+            </button>
+          </div>
+
+          <div className="chart-filter-bar" role="group" aria-label="Claim chart filters">
+            <label className="chart-filter-field">
+              <span className="chart-filter-label">
+                <Bot size={15} aria-hidden />
+                <span className="label-with-help">
+                  Auto review status
+                  <HelpTooltip text="Filters by the automated AI review outcome for the latest mapping on each row." />
+                </span>
+              </span>
+              <select
+                value={chartFilters.autoReview}
+                onChange={(event) =>
+                  setChartFilters((prev) => ({
+                    ...prev,
+                    autoReview: event.target.value as AutoReviewFilter
+                  }))
+                }
+              >
+                <option value="all">All</option>
+                <option value="verified">AI- Verified</option>
+                <option value="need_review">AI- Need Review</option>
+                <option value="review_pending">AI- Review Pending</option>
+              </select>
+            </label>
+
+            <label className="chart-filter-field">
+              <span className="chart-filter-label">
+                <CheckCircle2 size={15} aria-hidden />
+                <span className="label-with-help">
+                  Analyst review status
+                  <HelpTooltip text="Accepted or rejected means you made a final disposition. Review pending means the row still needs your decision." />
+                </span>
+              </span>
+              <select
+                value={chartFilters.status}
+                onChange={(event) =>
+                  setChartFilters((prev) => ({
+                    ...prev,
+                    status: event.target.value as AnalystStatusFilter
+                  }))
+                }
+              >
+                <option value="all">All</option>
+                <option value="completed">Completed</option>
+                <option value="review_pending">Review pending</option>
+                <option value="accepted">Accepted</option>
+                <option value="rejected">Rejected</option>
+              </select>
+            </label>
+
+            <label className="chart-filter-field">
+              <span className="chart-filter-label">
+                <UserRound size={15} aria-hidden />
+                <span className="label-with-help">
+                  Updated by
+                  <HelpTooltip text="Manual includes edits you typed and changes you accepted from Ask agent. AI is the original mapping agent output." />
+                </span>
+              </span>
+              <select
+                value={chartFilters.updatedBy}
+                onChange={(event) =>
+                  setChartFilters((prev) => ({
+                    ...prev,
+                    updatedBy: event.target.value as UpdatedByFilter
+                  }))
+                }
+              >
+                <option value="all">All</option>
+                <option value="manual">Manual</option>
+                <option value="ai">AI</option>
+              </select>
+            </label>
+          </div>
+
+          {filterIsEmpty ? (
+            <p className="doc-sub" style={{ margin: 0 }}>
+              No rows match these filters. Set any dropdown back to All to widen the view.
+            </p>
+          ) : null}
+        </div>
+      ) : null}
+
       {!activeRunId ? (
         <div className="empty">
-          No chart run yet. On Setup, confirm a recommended standard and build the claim chart.
+          No chart yet. Return to Setup, confirm a recommended standard, and create a chart.
         </div>
       ) : !chart ? (
-        <div className="empty">Loading chart for run {activeRunId.slice(0, 8)}…</div>
+        <div className="empty">
+          <SkeletonBlock variant="chart" label="Loading claim chart" />
+          <p className="doc-sub" style={{ marginBottom: 0 }}>
+            Loading chart {activeRunId.slice(0, 8)}…
+          </p>
+        </div>
       ) : (
         <>
           {building ? (
@@ -480,9 +682,19 @@ export default function ClaimChartsScreen({
 
           {!chart.rows.length ? (
             <div className="empty">
-              {building
-                ? `Searching and decomposing Claim 1 against ${chart.run.family || "the standard"}…`
-                : "No claim-chart rows on this run. Return to Setup and build a chart for the confirmed standard."}
+              {building ? (
+                <>
+                  <InlineSpinner label="Building chart" size={18} />
+                  <p style={{ margin: "10px 0 4px" }}>
+                    Analyzing Claim 1 against {chart.run.family || "the selected standard"}…
+                  </p>
+                  <p className="doc-sub" style={{ margin: 0 }}>
+                    Decomposing elements, then mapping evidence. Rows appear as each element finishes.
+                  </p>
+                </>
+              ) : (
+                "No claim-chart rows on this run. Return to Setup and create a chart for the confirmed standard."
+              )}
             </div>
           ) : (
             <div
@@ -508,24 +720,80 @@ export default function ClaimChartsScreen({
                     </tr>
                   </thead>
                   <tbody>
-                    {chart.rows.map((row) => {
+                    {filteredRows.map((row) => {
                       const latest = latestRevision(row);
                       const blocks = latest?.evidence_blocks || [];
                       const selected = selectedRow === row.id;
-                      const reviewLabel = reviewAgentLabel(latest);
-                      const missing = latest?.missing_requirements || [];
+                      const attention = rowAttentionBucket(row);
+                      const collapsed = Boolean(collapsedRows[row.id]);
+                      const rejected = latest?.analyst_disposition === "reject";
+                      const dispositionLabel = analystDispositionLabel(row);
                       return (
                         <tr
                           key={row.id}
-                          className={selected ? "selected" : ""}
+                          className={`${selected ? "selected" : ""} attention-${attention} ${
+                            collapsed ? "is-collapsed" : ""
+                          } ${rejected ? "is-rejected" : ""}`}
                           onClick={() => setSelectedRow(row.id)}
                         >
-                          <td>
-                            <strong className="element-id">{row.label}</strong>
-                            <div className="element-text">{row.exact_text}</div>
+                          <td className="chart-claim-col">
+                            <div className="chart-claim-head">
+                              <button
+                                type="button"
+                                className="chart-row-collapse"
+                                aria-label={collapsed ? "Expand row" : "Collapse row"}
+                                aria-expanded={!collapsed}
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  setCollapsedRows((prev) => ({
+                                    ...prev,
+                                    [row.id]: !prev[row.id]
+                                  }));
+                                }}
+                              >
+                                {collapsed ? (
+                                  <ChevronRight size={16} aria-hidden />
+                                ) : (
+                                  <ChevronDown size={16} aria-hidden />
+                                )}
+                              </button>
+                              <div className="chart-claim-title-row">
+                                <strong className="element-id">{row.label}</strong>
+                              </div>
+                              {dispositionLabel ? (
+                                <span
+                                  className={`chart-reviewed-badge ${
+                                    dispositionLabel === "Accepted" ? "is-accepted" : "is-rejected"
+                                  }`}
+                                  title={
+                                    dispositionLabel === "Accepted"
+                                      ? "Analyst accepted — reviewed"
+                                      : "Analyst rejected — omitted from Word export"
+                                  }
+                                >
+                                  {dispositionLabel === "Accepted" ? (
+                                    <BadgeCheck size={15} strokeWidth={2.25} aria-hidden />
+                                  ) : (
+                                    <Ban size={15} strokeWidth={2.25} aria-hidden />
+                                  )}
+                                  {dispositionLabel === "Accepted"
+                                    ? "Reviewed · Accepted"
+                                    : "Rejected · Excluded from export"}
+                                </span>
+                              ) : null}
+                            </div>
+                            {!collapsed ? (
+                              <div className="element-text chart-claim-text">{row.exact_text}</div>
+                            ) : null}
                           </td>
-                          <td>
-                            {blocks.length ? (
+                          <td className="chart-evidence-col">
+                            {collapsed ? (
+                              <div className="doc-sub">
+                                {blocks.length
+                                  ? `${blocks.length} proof${blocks.length === 1 ? "" : "s"}`
+                                  : "No evidence"}
+                              </div>
+                            ) : blocks.length ? (
                               <EvidencePassageList
                                 title=""
                                 blocks={blocks}
@@ -538,233 +806,95 @@ export default function ClaimChartsScreen({
                                 No map — no section of the standard meets this element.
                               </div>
                             ) : building && !latest?.mapping_label ? (
-                              <div className="evidence-empty">Mapping in progress…</div>
+                              <div className="evidence-empty">
+                                <InlineSpinner label="Mapping" /> Mapping this element…
+                              </div>
                             ) : (
                               <div className="evidence-empty">
-                                No verbatim quote / source / screenshot linked yet.
+                                No quote, source, or screenshot linked yet.
                               </div>
                             )}
                           </td>
-                          <td>
-                            {latest?.mapping_label ? (
-                              <div className="mapping-cell">
-                                <div className="evidence-label">Mapping label</div>
-                                <StatusChip
-                                  label={latest.mapping_label}
-                                  kind={mappingLabelKind(latest.mapping_label)}
-                                />
-                                <div className="evidence-label" style={{ marginTop: 10 }}>
-                                  Rationale
-                                </div>
-                                <div className="element-text">
-                                  {latest.rationale || "No rationale provided."}
-                                </div>
-                                {latest.mapping_label === "Partial map" && missing.length ? (
-                                  <div className="partial-gaps">
-                                    <div className="evidence-label">What is missing</div>
-                                    <ul>
-                                      {missing.map((item) => (
-                                        <li key={item}>{item}</li>
-                                      ))}
-                                    </ul>
-                                  </div>
-                                ) : null}
-                                {!latest?.ai_review && reviewLabel ? (
-                                  <div className="doc-sub" style={{ marginTop: 8 }}>
-                                    Review agent: <strong>{reviewLabel}</strong>
-                                  </div>
-                                ) : null}
-                                {latest?.analyst_disposition ? (
-                                  <div className="doc-sub" style={{ marginTop: 4 }}>
-                                    Analyst: <strong>{latest.analyst_disposition}</strong>
-                                  </div>
-                                ) : null}
-                                {ready && latest?.id ? (
-                                  <div className="row-edit-actions">
-                                    <span
-                                      className={`authorship-pill origin-${latest.authorship || "ai"}`}
-                                    >
-                                      {latest.authorship_label || "AI"}
-                                    </span>
-                                    {latest.ai_review ? (
-                                      <span
-                                        className={`ai-review-status-badge kind-${aiReviewStatusKind(
-                                          latest.ai_review
-                                        )}`}
-                                      >
-                                        {aiReviewStatusLabel(latest.ai_review)}
-                                      </span>
-                                    ) : null}
-                                    <button
-                                      type="button"
-                                      className="secondary"
-                                      disabled={actionBusy}
-                                      onClick={(event) => {
-                                        event.stopPropagation();
-                                        openEditForm(row.id);
-                                      }}
-                                    >
-                                      Edit claim
-                                    </button>
-                                    <button
-                                      type="button"
-                                      className="secondary"
-                                      disabled={actionBusy}
-                                      onClick={(event) => {
-                                        event.stopPropagation();
-                                        openAskAgentForRow(row.id);
-                                      }}
-                                    >
-                                      Ask agent
-                                    </button>
-                                    <button
-                                      type="button"
-                                      className="secondary"
-                                      disabled={actionBusy}
-                                      onClick={(event) => {
-                                        event.stopPropagation();
-                                        if (latest.ai_review) {
-                                          openAiReviewPanel(row.id);
-                                          return;
-                                        }
-                                        setSelectedRow(row.id);
-                                        void runRowAction(
-                                          "AI review",
-                                          () =>
-                                            api(`/api/rows/${latest.id}/ai-review`, {
-                                              method: "POST"
-                                            }),
-                                          { openReview: true, revisionId: latest.id }
-                                        );
-                                      }}
-                                    >
-                                      {latest.ai_review
-                                        ? "Analysis report"
-                                        : actionBusy && selectedRow === row.id
-                                          ? "Reviewing…"
-                                          : "AI review"}
-                                    </button>
-                                    {latest.ai_review ? (
-                                      <button
-                                        type="button"
-                                        className="ghost"
-                                        disabled={actionBusy}
-                                        onClick={(event) => {
-                                          event.stopPropagation();
-                                          setSelectedRow(row.id);
-                                          void runRowAction(
-                                            "AI review",
-                                            () =>
-                                              api(`/api/rows/${latest.id}/ai-review`, {
-                                                method: "POST"
-                                              }),
-                                            { openReview: true, revisionId: latest.id }
-                                          );
-                                        }}
-                                      >
-                                        Re-run
-                                      </button>
-                                    ) : null}
-                                    <button
-                                      type="button"
-                                      className="ghost"
-                                      disabled={actionBusy}
-                                      onClick={(event) => {
-                                        event.stopPropagation();
-                                        const block =
-                                          blocks.find((item) => item.available !== false) ||
-                                          blocks[0];
-                                        if (block) openDocument(block, row.id);
-                                        else {
-                                          setSelectedRow(row.id);
-                                          setInspectorTab("evidence");
-                                        }
-                                      }}
-                                    >
-                                      Evidence
-                                    </button>
-                                    <button
-                                      type="button"
-                                      className="ghost"
-                                      disabled={actionBusy}
-                                      onClick={(event) => {
-                                        event.stopPropagation();
-                                        openNotesPanel(row.id);
-                                      }}
-                                    >
-                                      Notes
-                                    </button>
-                                    <button
-                                      type="button"
-                                      className="btn-accept"
-                                      disabled={
-                                        actionBusy || latest.analyst_disposition === "accept"
-                                      }
-                                      title={
-                                        latest.analyst_disposition === "accept"
-                                          ? "Already accepted (immutable)"
-                                          : "Accept this mapping for the reviewed final export"
-                                      }
-                                      onClick={(event) => {
-                                        event.stopPropagation();
-                                        void runRowAction(
-                                          "Accept",
-                                          () =>
-                                            api(`/api/rows/${latest.id}/decision`, {
-                                              method: "POST",
-                                              body: JSON.stringify({
-                                                disposition: "accept",
-                                                comment: ""
-                                              })
-                                            }),
-                                          { revisionId: latest.id }
-                                        );
-                                      }}
-                                    >
-                                      Accept
-                                    </button>
-                                    <button
-                                      type="button"
-                                      className="btn-reject"
-                                      disabled={
-                                        actionBusy || latest.analyst_disposition === "accept"
-                                      }
-                                      title={
-                                        latest.analyst_disposition === "accept"
-                                          ? "Accepted revisions are immutable — challenge to revise"
-                                          : "Reject this mapping (can challenge later)"
-                                      }
-                                      onClick={(event) => {
-                                        event.stopPropagation();
-                                        const comment = window.prompt(
-                                          "Reject reason (optional):",
-                                          ""
-                                        );
-                                        if (comment === null) return;
-                                        void runRowAction(
-                                          "Reject",
-                                          () =>
-                                            api(`/api/rows/${latest.id}/decision`, {
-                                              method: "POST",
-                                              body: JSON.stringify({
-                                                disposition: "reject",
-                                                comment: comment.trim()
-                                              })
-                                            }),
-                                          { revisionId: latest.id }
-                                        );
-                                      }}
-                                    >
-                                      Reject
-                                    </button>
-                                  </div>
-                                ) : null}
-                              </div>
+                          <td className="chart-mapping-col">
+                            {collapsed ? (
+                              <div className="doc-sub">{latest?.mapping_label || "No mapping"}</div>
+                            ) : latest?.mapping_label && latest.id ? (
+                              <ChartMappingCell
+                                revision={latest}
+                                ready={Boolean(latest.mapping_label) || ready}
+                                busy={busyRevisionId === latest.id}
+                                onEdit={() => openEditForm(row.id)}
+                                onRerun={() => {
+                                  setSelectedRow(row.id);
+                                  void runRowAction(
+                                    "AI review",
+                                    () =>
+                                      api(`/api/rows/${latest.id}/ai-review`, {
+                                        method: "POST"
+                                      }),
+                                    { openReview: true, revisionId: latest.id }
+                                  );
+                                }}
+                                onManageEvidence={() => {
+                                  const block =
+                                    blocks.find((item) => item.available !== false) || blocks[0];
+                                  if (block) openDocument(block, row.id);
+                                  else {
+                                    setSelectedRow(row.id);
+                                    setInspectorTab("evidence");
+                                  }
+                                }}
+                                onAnalysisReport={() => {
+                                  if (latest.ai_review) {
+                                    openAiReviewPanel(row.id);
+                                    return;
+                                  }
+                                  setSelectedRow(row.id);
+                                  void runRowAction(
+                                    "AI review",
+                                    () =>
+                                      api(`/api/rows/${latest.id}/ai-review`, {
+                                        method: "POST"
+                                      }),
+                                    { openReview: true, revisionId: latest.id }
+                                  );
+                                }}
+                                onAskAgent={() => openAskAgentForRow(row.id)}
+                                onNotes={() => openNotesPanel(row.id)}
+                                onViewRevisionLog={() =>
+                                  setRevisionLogTarget({ rowId: row.id, label: row.label })
+                                }
+                                onAccept={() => {
+                                  void runRowAction(
+                                    "Accept",
+                                    () =>
+                                      api(`/api/rows/${latest.id}/decision`, {
+                                        method: "POST",
+                                        body: JSON.stringify({
+                                          disposition: "accept",
+                                          comment: ""
+                                        })
+                                      }),
+                                    { revisionId: latest.id }
+                                  );
+                                }}
+                                onReject={() =>
+                                  setRejectTarget({
+                                    rowId: row.id,
+                                    revisionId: latest.id,
+                                    label: row.label
+                                  })
+                                }
+                              />
                             ) : (
                               <div className="evidence-empty">
-                                {building
-                                  ? "Awaiting Full / Partial / No map label…"
-                                  : "No mapping yet"}
+                                {building ? (
+                                  <>
+                                    <InlineSpinner label="Mapping" /> Waiting for mapping label…
+                                  </>
+                                ) : (
+                                  "No mapping yet for this element."
+                                )}
                               </div>
                             )}
                           </td>
@@ -863,7 +993,7 @@ export default function ClaimChartsScreen({
                           onToggleExpand={() => setExpandedDoc((value) => !value)}
                         />
                       ) : (
-                        <div className="empty">Select a claim row to open the document.</div>
+                        <div className="empty">Select a claim row to inspect the source document.</div>
                       )
                     ) : null}
                     {inspectorTab === "judge" ? (
@@ -908,24 +1038,13 @@ export default function ClaimChartsScreen({
                                     })
                                 )
                               }
-                              onReject={() => {
-                                const comment = window.prompt(
-                                  "Reject reason (optional):",
-                                  ""
-                                );
-                                if (comment === null) return;
-                                void runRowAction(
-                                  "Reject",
-                                  () =>
-                                    api(`/api/rows/${selectedRevision.id}/decision`, {
-                                      method: "POST",
-                                      body: JSON.stringify({
-                                        disposition: "reject",
-                                        comment: comment.trim()
-                                      })
-                                    })
-                                );
-                              }}
+                              onReject={() =>
+                                setRejectTarget({
+                                  rowId: selectedChartRow.id,
+                                  revisionId: selectedRevision.id,
+                                  label: selectedChartRow.label
+                                })
+                              }
                               busy={actionBusy}
                             />
                           ) : null}
@@ -979,7 +1098,7 @@ export default function ClaimChartsScreen({
                           ) : null}
                         </div>
                       ) : (
-                        <div className="empty">Select a claim row to open the judge panel.</div>
+                        <div className="empty">Select a claim row to open the analysis report.</div>
                       )
                     ) : null}
                     {inspectorTab === "notes" ? (
@@ -991,7 +1110,7 @@ export default function ClaimChartsScreen({
                           onNotice={(message) => setActionNotice(message)}
                         />
                       ) : (
-                        <div className="empty">Select a claim row to add notes.</div>
+                        <div className="empty">Select a claim row to add analyst notes.</div>
                       )
                     ) : null}
                   </aside>
@@ -1005,10 +1124,19 @@ export default function ClaimChartsScreen({
               className={[
                 "ask-agent-overlay",
                 `layout-${askAgentUi.layout}`,
-                askAgentUi.historyOpen ? "is-history-open" : ""
+                askAgentUi.historyOpen ? "is-history-open" : "",
+                askAgentUi.position ? "is-repositioned" : ""
               ]
                 .filter(Boolean)
                 .join(" ")}
+              style={
+                askAgentUi.position
+                  ? {
+                      left: askAgentUi.position.left,
+                      top: askAgentUi.position.top
+                    }
+                  : undefined
+              }
               role="dialog"
               aria-label="Ask agent chatbot"
               aria-hidden={askAgentUi.historyOpen || undefined}
@@ -1031,7 +1159,7 @@ export default function ClaimChartsScreen({
                     onClose={() => {
                       setAskAgentOpen(false);
                       setAskAgentPreferredElementId(null);
-                      setAskAgentUi({ historyOpen: false, layout: "normal" });
+                      setAskAgentUi({ historyOpen: false, layout: "normal", position: null });
                     }}
                     onSeedConsumed={() => setAskAgentSeed(null)}
                     onSelectRow={setSelectedRow}
@@ -1086,6 +1214,69 @@ export default function ClaimChartsScreen({
                   { openReview: true, after: () => setEditOpen(false) }
                 )
               }
+            />
+          ) : null}
+
+          {revisionLogTarget ? (
+            <RevisionLogModal
+              open
+              elementId={revisionLogTarget.rowId}
+              elementLabel={revisionLogTarget.label}
+              onClose={() => setRevisionLogTarget(null)}
+            />
+          ) : null}
+
+          {rejectTarget ? (
+            <RejectConfirmModal
+              open
+              elementLabel={rejectTarget.label}
+              busy={actionBusy}
+              onCancel={() => setRejectTarget(null)}
+              onEditManually={() => {
+                const rowId = rejectTarget.rowId;
+                setRejectTarget(null);
+                setSelectedRow(rowId);
+                setEditOpen(true);
+              }}
+              onRerun={() => {
+                const revisionId = rejectTarget.revisionId;
+                setRejectTarget(null);
+                void runRowAction(
+                  "Re-run element",
+                  () =>
+                    api(`/api/rows/${revisionId}/challenge`, {
+                      method: "POST",
+                      body: JSON.stringify({
+                        challenge:
+                          "Analyst requested re-run instead of reject — remap this claim element."
+                      })
+                    }),
+                  { revisionId, openReview: true }
+                );
+              }}
+              onAskAgent={() => {
+                const rowId = rejectTarget.rowId;
+                setRejectTarget(null);
+                openAskAgentForRow(rowId);
+              }}
+              onConfirm={(comment) => {
+                const revisionId = rejectTarget.revisionId;
+                void runRowAction(
+                  "Reject",
+                  () =>
+                    api(`/api/rows/${revisionId}/decision`, {
+                      method: "POST",
+                      body: JSON.stringify({
+                        disposition: "reject",
+                        comment
+                      })
+                    }),
+                  {
+                    revisionId,
+                    after: () => setRejectTarget(null)
+                  }
+                );
+              }}
             />
           ) : null}
         </>

@@ -169,15 +169,87 @@ const SUPPORT_CRITERIA = ["C07", "C08"] as const;
 const ALL_ROW_CRITERIA = [...CORE_CRITERIA, ...SUPPORT_CRITERIA] as const;
 
 const CRITERION_HELP: Record<string, string> = {
-  C01: "Right standard and edition",
-  C02: "Quote real and verbatim",
-  C03: "Source and page correct",
-  C04: "Screenshot matches quote",
-  C05: "Rationale supports element",
-  C06: "Full / Partial / No label correct",
-  C07: "Claim coverage",
-  C08: "Normative/optional compliance"
+  C01: "Correct standard document",
+  C02: "Quote matches the original text",
+  C03: "Citation points to the right place",
+  C04: "Screenshot attached & page-linked (no OCR)",
+  C05: "Explanation matches the evidence",
+  C06: "Mapping label is correct",
+  C07: "Every claim part is covered",
+  C08: "Mandatory gaps are not overstated"
 };
+
+/** PM / analyst-facing rubric copy for the Evaluation screen (C01–C06). */
+const RUBRIC_GUIDE: Array<{
+  id: string;
+  name: string;
+  checks: string;
+  passes: string;
+  fails: string;
+  why: string;
+  severity: string;
+}> = [
+  {
+    id: "C01",
+    name: "Correct standard document",
+    checks:
+      "Does the chart use the same standard document and edition as the labelled reference chart? For this demo, that is H.265 version 10 (July 2024).",
+    passes: "Evidence is taken from the expected standard edition.",
+    fails: "Evidence is from a different standard, a wrong edition, or a document that should have been rejected for this patent.",
+    why: "A strong quote from the wrong standard is still the wrong answer for a claim chart.",
+    severity: "Critical"
+  },
+  {
+    id: "C02",
+    name: "Quote matches the original text",
+    checks:
+      "Is every quoted passage real text from the cited page of the standard — not rewritten, summarized, or invented?",
+    passes: "The quote appears on the cited page as written (only ordinary spacing differences allowed).",
+    fails: "The quote is missing from the page, numbers or wording were changed, or the text was invented.",
+    why: "Invented or altered quotes destroy trust in the chart and block any claim of review readiness.",
+    severity: "Critical"
+  },
+  {
+    id: "C03",
+    name: "Citation points to the right place",
+    checks:
+      "Do the standard name, section, and page numbers correctly identify where that quote lives in the document?",
+    passes: "Document edition, section, and page references all point to the same passage as the quote.",
+    fails: "Wrong section, wrong page, or page numbering systems mixed up so a reviewer cannot open the cited location.",
+    why: "Analysts and attorneys must be able to open the standard and land on the cited text in one step.",
+    severity: "High"
+  },
+  {
+    id: "C04",
+    name: "Screenshot attached for the cited page",
+    checks:
+      "Is a screenshot attached and linked to the same PDF page as the quoted cite? (Auto-check does not yet OCR the image to prove the crop shows the quote.)",
+    passes: "Every evidence block has a screenshot linked to its cited page (page provenance present).",
+    fails: "Screenshot is missing, or an image is present but not tied to the cited page.",
+    why: "Reviewers need a visual next to the cite. Proving the crop text matches the quote is a roadmap OCR/vision check — see Production plan.",
+    severity: "Medium"
+  },
+  {
+    id: "C05",
+    name: "Explanation matches the evidence",
+    checks:
+      "Does the written rationale explain what is supported, what is still missing, and why the mapping label was chosen?",
+    passes: "The explanation covers real support and any material gaps or conditions, consistent with the label.",
+    fails: "The rationale only restates the label, ignores gaps, or claims support the evidence does not show.",
+    why: "Labels without a clear explanation are hard to review and easy to over-trust.",
+    severity: "Medium"
+  },
+  {
+    id: "C06",
+    name: "Mapping label is correct",
+    checks:
+      "Is the Full map / Partial map / No map label correct compared with the labelled reference chart after the claim parts are lined up?",
+    passes: "The chart’s label matches the expected label for that claim part (Full = fully supported, Partial = some support with gaps, No map = no adequate support).",
+    fails: "The label disagrees with the reference — especially claiming Full map when support is only partial or missing.",
+    why: "Over-claiming Full map is more harmful than under-mapping; this check is the main honesty gate on mapping strength.",
+    severity: "High"
+  }
+];
 
 const STATUS_CLASS: Record<string, string> = {
   Pass: "eval-pass",
@@ -218,39 +290,6 @@ const LEVEL_METRIC_KEYS: Record<LevelId, Array<{ key: string; label: string }>> 
   ],
   complete_claim: [{ key: "full_map_precision_recall", label: "Full-map P/R" }]
 };
-
-const FALLBACK_RUBRIC: Array<{ id: string; name: string; pass_condition: string }> = [
-  {
-    id: "C01",
-    name: "Right standard",
-    pass_condition: "Evidence/target is the intended standard edition (H.265 V10)."
-  },
-  {
-    id: "C02",
-    name: "Quote real and verbatim",
-    pass_condition: "Quote found verbatim in cited PDF page text (whitespace-normalized)."
-  },
-  {
-    id: "C03",
-    name: "Source and page correct",
-    pass_condition: "Edition/hash, section, PDF ordinal and printed page correspond."
-  },
-  {
-    id: "C04",
-    name: "Screenshot matches quote",
-    pass_condition: "Screenshot/crop linked to cited page with quote present."
-  },
-  {
-    id: "C05",
-    name: "Rationale supports element",
-    pass_condition: "Rationale states support + material gaps/conditions."
-  },
-  {
-    id: "C06",
-    name: "Full / Partial / No label correct",
-    pass_condition: "Aligned generated labels match reference Full/Partial/No policy."
-  }
-];
 
 const TOP_FAILURE_NARRATIVES = [
   {
@@ -357,6 +396,110 @@ function labelledReference(row: EvalCase | null): LabelledReference | null {
   const ref = row?.payload?.reference;
   if (!ref || typeof ref !== "object") return null;
   return ref as LabelledReference;
+}
+
+type AlignmentRow = EvalDetail["alignments"][number];
+type CoverageInfo = { status: "Covered" | "Weak" | "Missing"; detail: string; bestScore: number };
+
+function alignmentForCase(
+  row: EvalCase,
+  alignments: AlignmentRow[] | undefined
+): AlignmentRow | undefined {
+  return (alignments || []).find(
+    (a) => a.reference_row_id === row.case_key || a.reference_label === row.case_key
+  );
+}
+
+function coverageForCase(
+  row: EvalCase,
+  alignments: AlignmentRow[] | undefined
+): CoverageInfo {
+  const align = alignmentForCase(row, alignments);
+  const gens = align?.generated_elements || [];
+  const c07 = row.criteria.find((c) => c.criterion_id === "C07");
+  const c07Status = c07 ? criterionStatus(c07) : null;
+  if (!gens.length) {
+    return {
+      status: "Missing",
+      detail: "No agent rows aligned to this gold claim element.",
+      bestScore: 0
+    };
+  }
+  const bestScore = Math.max(...gens.map((g) => g.score || 0), 0);
+  if (c07Status === "Pass" || bestScore >= 0.55) {
+    return {
+      status: "Covered",
+      detail: `Aligned to ${gens.map((g) => g.generated_label || (g.generated_element_id || "").slice(0, 8)).join(", ")} (best ${bestScore.toFixed(2)}).`,
+      bestScore
+    };
+  }
+  if (c07Status === "Fail") {
+    return {
+      status: "Missing",
+      detail: criterionReason(c07!) || "Coverage check failed.",
+      bestScore
+    };
+  }
+  return {
+    status: "Weak",
+    detail: `Weak alignment (best ${bestScore.toFixed(2)}): ${gens.map((g) => g.generated_label || "?").join(", ")}.`,
+    bestScore
+  };
+}
+
+function failureClassForCriterion(
+  cid: string,
+  crit: CriterionResult | undefined,
+  coverage: CoverageInfo
+): string {
+  const st = crit ? criterionStatus(crit) : "—";
+  if (st === "Pass") return "—";
+  if (coverage.status === "Missing" && (cid === "C06" || cid === "C07" || !crit)) {
+    return "Missing";
+  }
+  const reason = ((crit && criterionReason(crit)) || "").toLowerCase();
+  if (cid === "C04" && (st === "Fail" || st === "Error")) return "Missing";
+  if (cid === "C06") {
+    if (reason.includes("full map")) return "Over-claim";
+    if (reason.includes("no map") && !reason.includes("partial")) return "Under-map";
+    if (reason.includes("no map")) return "Under-map";
+    if (reason.includes("missing generated")) return "Missing";
+    return "Wrong";
+  }
+  if (["C01", "C02", "C03"].includes(cid) && (st === "Fail" || st === "Error")) return "Wrong";
+  if (cid === "C05" && (st === "Fail" || st === "Error")) return "Wrong";
+  if (coverage.status === "Weak") return "Weak coverage";
+  if (st === "Needs review" || st === "Not run") return "Needs review";
+  return "Wrong";
+}
+
+function topBlockerForCase(row: EvalCase, coverage: CoverageInfo): string {
+  if (coverage.status === "Missing") {
+    return `Coverage missing — ${coverage.detail}`;
+  }
+  const failed = CORE_CRITERIA.map((cid) => {
+    const crit = row.criteria.find((c) => c.criterion_id === cid);
+    const st = crit ? criterionStatus(crit) : "—";
+    return { cid, crit, st };
+  }).filter((x) => x.st === "Fail" || x.st === "Error" || x.st === "Needs review" || x.st === "Not run");
+  if (!failed.length) {
+    return coverage.status === "Weak" ? `Weak coverage — ${coverage.detail}` : "None — all core criteria Pass";
+  }
+  failed.sort((a, b) => {
+    const sa = SEVERITY_ORDER.indexOf(a.crit?.severity || "Low");
+    const sb = SEVERITY_ORDER.indexOf(b.crit?.severity || "Low");
+    return (sa === -1 ? 99 : sa) - (sb === -1 ? 99 : sb);
+  });
+  const top = failed[0];
+  const klass = failureClassForCriterion(top.cid, top.crit, coverage);
+  const reason = top.crit ? criterionReason(top.crit) : "";
+  return `${top.cid} ${top.st} (${klass})${reason ? ` — ${reason.slice(0, 140)}` : ""}`;
+}
+
+function coverageChipClass(status: CoverageInfo["status"]) {
+  if (status === "Covered") return "eval-chip eval-pass";
+  if (status === "Missing") return "eval-chip eval-fail";
+  return "eval-chip eval-review";
 }
 
 function filterLevelCases(cases: EvalCase[], level: LevelId) {
@@ -701,10 +844,7 @@ export default function EvaluationQualityScreen({
         if (!row.criteria.some((c) => criterionStatus(c) === "Needs review")) return false;
       }
       if (criterionFilter !== "all") {
-        const hit = row.criteria.find((c) => c.criterion_id === criterionFilter);
-        if (!hit || !["Fail", "Error", "Needs review", "Not run"].includes(criterionStatus(hit))) {
-          return false;
-        }
+        if (!row.criteria.some((c) => c.criterion_id === criterionFilter)) return false;
       }
       if (severityFilter !== "all") {
         if (!row.criteria.some((c) => c.severity === severityFilter)) return false;
@@ -715,6 +855,12 @@ export default function EvaluationQualityScreen({
 
   const selectedCase =
     rowCases.find((c) => c.case_key === selectedCaseKey) || filteredRows[0] || null;
+  const selectedCoverage = selectedCase
+    ? coverageForCase(selectedCase, detail?.alignments)
+    : null;
+  const selectedAlignment = selectedCase
+    ? alignmentForCase(selectedCase, detail?.alignments)
+    : null;
   const failureActions = detail?.failure_actions || summary?.failure_actions || [];
 
   const rowCriterionFailures = useMemo(() => {
@@ -1623,13 +1769,13 @@ export default function EvaluationQualityScreen({
             </div>
           </div>
 
-          {/* C — C01–C06 scoreboard */}
+          {/* C — roll-up rates (detail lives under Run scores) */}
           <div className="panel">
             <div className="eq-summary-head">
-              <h3 style={{ margin: 0 }}>Aggregated Results Per Rubric Criterion</h3>
+              <h3 style={{ margin: 0 }}>Pass rates by criterion (summary)</h3>
               <div className="eq-summary-stats">
                 <span>
-                  Claim elements: <strong>{rowCases.length}</strong>
+                  Claim elements scored: <strong>{rowCases.length}</strong>
                 </span>
                 <span>
                   Alignments:{" "}
@@ -1640,12 +1786,17 @@ export default function EvaluationQualityScreen({
                 </span>
               </div>
             </div>
+            <p className="doc-sub" style={{ marginTop: 8 }}>
+              These rates count <strong>labelled claim elements</strong> (1[a], 1[b], 1[c]) — not
+              every evidence block on sheet 2. Open <strong>Run scores</strong> for the full
+              element × criterion detail table (Pass/Fail + reason per cell).
+            </p>
             <table className="comparison-table" style={{ marginTop: 12 }}>
               <thead>
                 <tr>
                   <th>Rubric criterion</th>
                   <th>Pass count</th>
-                  <th>Total rows</th>
+                  <th>Claim elements</th>
                   <th>Pass rate</th>
                   <th>Readiness verdict</th>
                 </tr>
@@ -1661,14 +1812,15 @@ export default function EvaluationQualityScreen({
                     const totalRows = Number(totalPart || 0);
                     const rate =
                       totalRows > 0 ? `${((100 * passCount) / totalRows).toFixed(1)}%` : "—";
+                    const label = CRITERION_HELP[c.criterion_id] || c.name;
                     const readiness =
                       totalRows === 0
                         ? "Not scored"
                         : passCount === totalRows
-                          ? `Ready — ${c.name}`
+                          ? `Ready — ${label}`
                           : passCount === 0
-                            ? `Blocker — ${c.name} failed on all scored rows`
-                            : `Watch — ${c.name} partial (${c.automatic_display})`;
+                            ? `Blocker — ${label} failed on all scored elements`
+                            : `Watch — ${label} partial (${c.automatic_display})`;
                     return (
                     <tr key={c.criterion_id}>
                       <td>
@@ -1680,7 +1832,7 @@ export default function EvaluationQualityScreen({
                             setSection("results");
                           }}
                         >
-                          {c.criterion_id}: {c.name}
+                          {c.criterion_id}: {label}
                         </button>
                       </td>
                       <td>{passCount}</td>
@@ -1731,10 +1883,10 @@ export default function EvaluationQualityScreen({
           <div className="eval-tabs" role="tablist">
             {(
               [
-                ["results", "3 Run scores"],
-                ["rubric", "1 Rubric"],
-                ["failures", "4 Failure modes"],
-                ["plan", "5 Production plan"]
+                ["results", "Run scores"],
+                ["rubric", "Rubric"],
+                ["failures", "Failure modes"],
+                ["plan", "Production plan"]
               ] as const
             ).map(([id, label]) => (
               <button
@@ -1751,72 +1903,79 @@ export default function EvaluationQualityScreen({
 
           {section === "rubric" ? (
             <div className="panel">
-              <h3 style={{ marginTop: 0 }}>How one chart row is scored</h3>
+              <h3 style={{ marginTop: 0 }}>Evaluation rubric</h3>
               <p className="doc-sub">
-                Same criteria as Deliverable 4 sheet <strong>1 Rubric</strong>. Each claim element
-                (1[a], 1[b], 1[c]) is scored Pass=1 / Fail=0 — no blended accuracy.
+                Each claim part in the chart (for example 1[a], 1[b], 1[c]) is checked against these
+                criteria. Scores are reported <strong>per criterion</strong> — we do not roll them
+                into one overall accuracy percentage. Pass = 1, Fail = 0.
               </p>
-              <table className="comparison-table" style={{ marginTop: 12 }}>
-                <thead>
-                  <tr>
-                    <th>ID</th>
-                    <th>Name</th>
-                    <th>Pass condition</th>
-                    <th>This run</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {(detail.reference_payload?.criteria?.length
-                    ? detail.reference_payload.criteria
-                    : FALLBACK_RUBRIC
-                  )
-                    .filter((c) =>
-                      CORE_CRITERIA.includes(c.id as (typeof CORE_CRITERIA)[number])
-                    )
-                    .map((c) => {
-                      const live = (summary?.criteria || []).find((x) => x.criterion_id === c.id);
-                      return (
-                        <tr key={c.id}>
-                          <td>
-                            <button
-                              type="button"
-                              className="linkish"
-                              onClick={() => {
-                                setCriterionFilter(c.id);
-                                setSection("results");
-                              }}
-                            >
-                              {c.id}
-                            </button>
-                          </td>
-                          <td>{c.name}</td>
-                          <td className="doc-sub">{c.pass_condition}</td>
-                          <td>
-                            {live ? (
-                              <>
-                                <strong>{live.automatic_display}</strong>
-                                {live.failures ? (
-                                  <span className="eval-chip eval-fail" style={{ marginLeft: 6 }}>
-                                    {live.failures} fail
-                                  </span>
-                                ) : (
-                                  <span className="eval-chip eval-pass" style={{ marginLeft: 6 }}>
-                                    Pass
-                                  </span>
-                                )}
-                              </>
+              <div className="eval-rubric-list" style={{ marginTop: 16 }}>
+                {RUBRIC_GUIDE.map((c) => {
+                  const live = (summary?.criteria || []).find((x) => x.criterion_id === c.id);
+                  return (
+                    <article key={c.id} className="eval-rubric-card">
+                      <header className="eval-rubric-card-head">
+                        <div>
+                          <button
+                            type="button"
+                            className="linkish"
+                            onClick={() => {
+                              setCriterionFilter(c.id);
+                              setSection("results");
+                            }}
+                          >
+                            {c.id}
+                          </button>
+                          <h4>{c.name}</h4>
+                        </div>
+                        <div className="eval-rubric-card-meta">
+                          <span className="eval-chip eval-review">{c.severity} if Fail</span>
+                          {live ? (
+                            live.failures ? (
+                              <span className="eval-chip eval-fail">
+                                This run: {live.automatic_display} · {live.failures} fail
+                              </span>
                             ) : (
-                              "—"
-                            )}
-                          </td>
-                        </tr>
-                      );
-                    })}
-                </tbody>
-              </table>
-              <p className="doc-sub" style={{ marginTop: 12 }}>
-                Attorney gate: C01–C04 must Pass. C06 Fail → not attorney-ready even if quotes are
-                clean.
+                              <span className="eval-chip eval-pass">
+                                This run: {live.automatic_display} · Pass
+                              </span>
+                            )
+                          ) : (
+                            <span className="eval-muted">This run: —</span>
+                          )}
+                        </div>
+                      </header>
+                      <dl className="eval-rubric-dl">
+                        <div>
+                          <dt>What we check</dt>
+                          <dd>{c.checks}</dd>
+                        </div>
+                        <div>
+                          <dt>Passes when</dt>
+                          <dd>{c.passes}</dd>
+                        </div>
+                        <div>
+                          <dt>Fails when</dt>
+                          <dd>{c.fails}</dd>
+                        </div>
+                        <div>
+                          <dt>Why it matters</dt>
+                          <dd>{c.why}</dd>
+                        </div>
+                      </dl>
+                    </article>
+                  );
+                })}
+              </div>
+              <p className="doc-sub" style={{ marginTop: 16 }}>
+                <strong>Readiness note:</strong> Critical citation checks (correct standard and real
+                quotes) must Pass. A wrong mapping label (especially an unsupported Full map) means
+                the chart is <strong>not</strong> attorney-ready — even if every quote is genuine.
+              </p>
+              <p className="doc-sub" style={{ marginTop: 10 }}>
+                <strong>Roadmap (C04):</strong> OCR/vision will later verify that the screenshot crop
+                actually contains the cited quote. Until then, C04 only checks that a screenshot is
+                attached and page-linked — see Production plan.
               </p>
             </div>
           ) : null}
@@ -1825,7 +1984,7 @@ export default function EvaluationQualityScreen({
             <div className="eq-split">
               <div className="panel">
                 <div className="eval-row-toolbar">
-                  <strong>Run scores — claim elements vs C01–C06</strong>
+                  <strong>Run scores — decision scoreboard</strong>
                   <div className="eq-filters">
                     <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
                       <option value="all">All statuses</option>
@@ -1840,7 +1999,7 @@ export default function EvaluationQualityScreen({
                       <option value="all">All criteria</option>
                       {CORE_CRITERIA.map((id) => (
                         <option key={id} value={id}>
-                          {id} issues
+                          {id} · {CRITERION_HELP[id]}
                         </option>
                       ))}
                     </select>
@@ -1857,60 +2016,72 @@ export default function EvaluationQualityScreen({
                     </select>
                   </div>
                 </div>
-                <table className="comparison-table">
+                <p className="doc-sub" style={{ marginBottom: 10 }}>
+                  One row per <strong>gold claim element</strong> (sheet 2). Agent fine-split rows
+                  (sheet 2b) are aligned into these buckets — open a row to see which agent rows and
+                  cites drove each Pass/Fail.
+                </p>
+                <table className="comparison-table eval-scoreboard">
                   <thead>
                     <tr>
                       <th>Element</th>
-                      <th>Expected label</th>
-                      <th>Actual label(s)</th>
+                      <th>Coverage</th>
                       <th>C01</th>
                       <th>C02</th>
                       <th>C03</th>
                       <th>C04</th>
                       <th>C05</th>
                       <th>C06</th>
-                      <th>Severity</th>
-                      <th></th>
+                      <th>Top blocker</th>
                     </tr>
                   </thead>
                   <tbody>
                     {filteredRows.length === 0 ? (
                       <tr>
-                        <td colSpan={11} className="doc-sub">
+                        <td colSpan={9} className="doc-sub">
                           No rows match filters.
                         </td>
                       </tr>
                     ) : (
                       filteredRows.map((row) => {
-                        const sev = worstSeverity(row.criteria);
+                        const coverage = coverageForCase(row, detail.alignments);
+                        const blocker = topBlockerForCase(row, coverage);
                         return (
                           <tr
                             key={row.id}
-                            className={selectedCase?.case_key === row.case_key ? "eval-selected" : ""}
+                            className={
+                              selectedCase?.case_key === row.case_key ? "eval-selected" : ""
+                            }
+                            style={{ cursor: "pointer" }}
+                            onClick={() => setSelectedCaseKey(row.case_key)}
                           >
-                            <td>{row.case_key}</td>
-                            <td>{row.reference_label || "—"}</td>
-                            <td>{formatLabels(row.generated_label)}</td>
+                            <td>
+                              <strong>{row.case_key}</strong>
+                              <div className="doc-sub">
+                                Exp {row.reference_label || "—"} · Act{" "}
+                                {formatLabels(row.generated_label)}
+                              </div>
+                            </td>
+                            <td>
+                              <span className={coverageChipClass(coverage.status)}>
+                                {coverage.status}
+                              </span>
+                            </td>
                             {CORE_CRITERIA.map((cid) => {
                               const crit = row.criteria.find((c) => c.criterion_id === cid);
                               const st = crit ? criterionStatus(crit) : "—";
+                              const klass = failureClassForCriterion(cid, crit, coverage);
                               return (
-                                <td key={cid}>
-                                  <span className={criterionChipClass(st)} title={st}>
-                                    {st === "Pass" ? "1" : st === "Fail" || st === "Error" ? "0" : "·"}
-                                  </span>
+                                <td key={cid} title={crit ? criterionReason(crit) : ""}>
+                                  <StatusChip value={typeof st === "string" ? st : String(st)} />
+                                  {st !== "Pass" && st !== "—" ? (
+                                    <div className="doc-sub">{klass}</div>
+                                  ) : null}
                                 </td>
                               );
                             })}
-                            <td>{sev || "—"}</td>
-                            <td>
-                              <button
-                                type="button"
-                                className="ghost"
-                                onClick={() => setSelectedCaseKey(row.case_key)}
-                              >
-                                View details
-                              </button>
+                            <td className="doc-sub" style={{ maxWidth: 280 }}>
+                              {blocker}
                             </td>
                           </tr>
                         );
@@ -1918,49 +2089,68 @@ export default function EvaluationQualityScreen({
                     )}
                   </tbody>
                 </table>
-                {detail.alignments?.length ? (
-                  <details style={{ marginTop: 12 }}>
-                    <summary>Alignment proposals</summary>
-                    <table className="comparison-table" style={{ marginTop: 8 }}>
-                      <thead>
-                        <tr>
-                          <th>Reference</th>
-                          <th>Expected</th>
-                          <th>Mapped generated</th>
-                          <th>Status</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {detail.alignments.map((a) => (
-                          <tr key={a.reference_row_id}>
-                            <td>
-                              {a.reference_label || a.reference_row_id}
-                              <div className="doc-sub">{(a.reference_text || "").slice(0, 80)}</div>
-                            </td>
-                            <td>{a.reference_mapping_label || "—"}</td>
-                            <td>
-                              {a.generated_elements
-                                .map((g) => `${g.generated_label || "?"} (${g.score.toFixed(2)})`)
-                                .join(", ") || "—"}
-                            </td>
-                            <td>{a.status}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </details>
-                ) : null}
+                <div className="eq-policy-box" style={{ marginTop: 14 }}>
+                  <strong>How to read scores (policy)</strong>
+                  <ul className="doc-sub" style={{ margin: "6px 0 0", paddingLeft: 18 }}>
+                    <li>
+                      <strong>C02/C03</strong> — quote is found on the <em>cited</em> PDF page (not
+                      necessarily the gold crop page). Cite drift can still Pass integrity.
+                    </li>
+                    <li>
+                      <strong>C04</strong> — screenshot attached and page-linked. OCR crop-match is
+                      roadmap.
+                    </li>
+                    <li>
+                      <strong>C06</strong> — label bundle after alignment (expected vs child labels).
+                      Locked D4 pack may show Fail where live fine-split policy would Pass.
+                    </li>
+                    <li>
+                      <strong>Coverage</strong> — whether gold 1[a]/1[c] got aligned agent rows
+                      (Missing / Weak / Covered). Separate from cite integrity.
+                    </li>
+                  </ul>
+                </div>
               </div>
 
               <div className="panel eq-detail">
-                {selectedCase ? (
+                {selectedCase && selectedCoverage ? (
                   <>
-                    <h3 style={{ marginTop: 0 }}>{selectedCase.case_key} — criterion detail</h3>
+                    <h3 style={{ marginTop: 0 }}>
+                      {selectedCase.case_key} — failure drill-down
+                    </h3>
                     <p className="doc-sub">
-                      Expected: <strong>{selectedCase.reference_label || "—"}</strong>
+                      Expected label: <strong>{selectedCase.reference_label || "—"}</strong>
                       {" · "}
-                      Actual: <strong>{formatLabels(selectedCase.generated_label)}</strong>
+                      Actual labels: <strong>{formatLabels(selectedCase.generated_label)}</strong>
                     </p>
+                    <div className="eq-labelled-box">
+                      <span className="doc-sub">Coverage</span>
+                      <p style={{ margin: "4px 0" }}>
+                        <span className={coverageChipClass(selectedCoverage.status)}>
+                          {selectedCoverage.status}
+                        </span>{" "}
+                        {selectedCoverage.detail}
+                      </p>
+                      <span className="doc-sub">Aligned agent rows (sheet 2b)</span>
+                      <p style={{ margin: "4px 0" }}>
+                        {selectedAlignment?.generated_elements?.length
+                          ? selectedAlignment.generated_elements.map((g) => (
+                              <span key={g.generated_element_id} className="eval-chip eval-muted" style={{ marginRight: 4 }}>
+                                {g.generated_label || "?"} · {g.generated_element_id.slice(0, 8)}…
+                                {g.generated_label ? ` (${g.score.toFixed(2)})` : ""}
+                              </span>
+                            ))
+                          : "— none —"}
+                      </p>
+                      {selectedAlignment?.generated_elements?.length ? (
+                        <p className="doc-sub" style={{ margin: 0 }}>
+                          Child labels:{" "}
+                          {selectedAlignment.generated_elements
+                            .map((g) => `${g.generated_label || "?"} = ${g.generated_text?.slice(0, 48) || "…"}`)
+                            .join(" · ")}
+                        </p>
+                      ) : null}
+                    </div>
                     {(() => {
                       const lab = labelledReference(selectedCase);
                       if (!lab) return null;
@@ -1969,18 +2159,14 @@ export default function EvaluationQualityScreen({
                         : lab.gaps || "";
                       return (
                         <div className="eq-labelled-box">
-                          <span className="doc-sub">Labelled-set decision (sheet 2)</span>
+                          <span className="doc-sub">Gold expectation (sheet 2)</span>
                           <p style={{ margin: "4px 0" }}>
                             <strong>{lab.mapping_label || selectedCase.reference_label}</strong>
-                            {lab.evidence_ids?.length ? (
-                              <span className="doc-sub"> · anchors {lab.evidence_ids.join(", ")}</span>
-                            ) : null}
                           </p>
                           <p className="doc-sub" style={{ margin: "0 0 6px" }}>
                             {(lab.exact_text || "").slice(0, 160)}
                             {(lab.exact_text || "").length > 160 ? "…" : ""}
                           </p>
-                          <p style={{ margin: "0 0 6px" }}>{lab.rationale || "—"}</p>
                           {gaps ? (
                             <p className="doc-sub" style={{ margin: 0 }}>
                               Gaps: {gaps}
@@ -1989,20 +2175,45 @@ export default function EvaluationQualityScreen({
                         </div>
                       );
                     })()}
-                    <p className="doc-sub">Failures and blocked criteria shown first.</p>
-                    {sortedCriteriaForDetail(selectedCase.criteria).map((c) => (
-                      <CriterionCard
-                        key={c.id}
-                        c={c}
-                        expandPass={false}
-                        overrideReason={overrideReason}
-                        setOverrideReason={setOverrideReason}
-                        onAdjudicate={(id, status) => void adjudicate(id, status)}
-                      />
-                    ))}
+                    <h4 style={{ marginBottom: 6 }}>Criteria — failures first</h4>
+                    <p className="doc-sub" style={{ marginTop: 0 }}>
+                      Failure class on each card: Missing / Wrong / Over-claim / Under-map / Weak
+                      coverage — so you know what to fix.
+                    </p>
+                    {sortedCriteriaForDetail(selectedCase.criteria)
+                      .filter((c) =>
+                        CORE_CRITERIA.includes(c.criterion_id as (typeof CORE_CRITERIA)[number])
+                      )
+                      .map((c) => {
+                        const st = criterionStatus(c);
+                        const klass = failureClassForCriterion(
+                          c.criterion_id,
+                          c,
+                          selectedCoverage
+                        );
+                        return (
+                          <div key={c.id}>
+                            {st !== "Pass" ? (
+                              <p className="doc-sub" style={{ marginBottom: 4 }}>
+                                Class: <strong>{klass}</strong>
+                              </p>
+                            ) : null}
+                            <CriterionCard
+                              c={c}
+                              expandPass={false}
+                              overrideReason={overrideReason}
+                              setOverrideReason={setOverrideReason}
+                              onAdjudicate={(id, status) => void adjudicate(id, status)}
+                            />
+                          </div>
+                        );
+                      })}
                   </>
                 ) : (
-                  <p className="doc-sub">Select a row to inspect expected vs actual criteria.</p>
+                  <p className="doc-sub">
+                    Select a scoreboard row to open coverage, aligned agent rows, and failure
+                    drill-down.
+                  </p>
                 )}
               </div>
             </div>
@@ -2164,11 +2375,11 @@ export default function EvaluationQualityScreen({
               <div className="eq-crit-grid" style={{ marginTop: 12 }}>
                 <div>
                   <span className="doc-sub">Automated</span>
-                  <p>C01 edition lock; C02 verbatim PDF-text match; C03 section + page offset; C04 screenshot link; Full-map / split / Table 8-10 guards.</p>
+                  <p>C01 edition lock; C02 verbatim PDF-text match; C03 section + page offset; C04 screenshot attached and page-linked; Full-map / split / Table 8-10 guards.</p>
                 </div>
                 <div>
                   <span className="doc-sub">Human-in-the-loop</span>
-                  <p>Partial map / C06 Fail / fine-split; decoder→encoder Full-map inference; cite-drift vs E01–E07; visual crop QA. LLMs cannot self-certify claim construction.</p>
+                  <p>Partial map / C06 Fail / fine-split; decoder→encoder Full-map inference; cite-drift vs gold crops; visual crop QA until OCR/vision lands. LLMs cannot self-certify claim construction.</p>
                 </div>
                 <div>
                   <span className="doc-sub">CI / regression</span>
@@ -2178,6 +2389,25 @@ export default function EvaluationQualityScreen({
                   <span className="doc-sub">This run</span>
                   <p><strong>{recommendation}</strong> · Attorney-ready: {attorneyReady ? "YES" : "NO"}</p>
                 </div>
+              </div>
+              <div className="panel" style={{ marginTop: 16, background: "#f7faf6" }}>
+                <h4 style={{ marginTop: 0 }}>Roadmap — correct-screenshot verification (OCR / vision)</h4>
+                <p className="doc-sub" style={{ marginBottom: 8 }}>
+                  Today C04 confirms a screenshot is <strong>attached and linked to the cited page</strong>.
+                  It does <strong>not</strong> prove the image crop contains the quoted text.
+                </p>
+                <ul className="doc-sub" style={{ margin: 0, paddingLeft: 18 }}>
+                  <li>
+                    Add an OCR or vision check that the screenshot text overlaps the cited quote
+                    (or that the crop box covers the quote on that PDF page).
+                  </li>
+                  <li>
+                    Fail only on clear mismatch; keep ambiguous crops as Needs review for a human.
+                  </li>
+                  <li>
+                    Optional later: compare agent crops to labelled gold screenshots for regression.
+                  </li>
+                </ul>
               </div>
             </div>
           ) : null}

@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
+import HelpTooltip from "../components/HelpTooltip";
+import SkeletonBlock from "../components/SkeletonBlock";
 import { api } from "../api";
 import type { RunSummary } from "../types";
 
@@ -201,27 +203,30 @@ export default function ObservabilityScreen({
   return (
     <section className="evaluations obs-screen">
       <div className="internal-purpose-banner" role="note">
-        <strong>Internal purpose only.</strong> Observability shows execution traces for debugging
-        (steps, tools, latency, errors). It is separate from Evaluation scoring and is{" "}
-        <em>not</em> an attorney-facing deliverable or essentiality opinion.
+        <strong>Internal only.</strong> Run traces for debugging (steps, tools, latency, errors).
+        Separate from Evaluation scoring — not an attorney-facing deliverable or essentiality
+        opinion.
       </div>
 
       <div className="eval-header">
         <div>
           <h1 className="page-title">Observability</h1>
           <p className="page-sub">
-            What happened during execution: agent steps, tool calls, model usage, latency, and
-            errors. Separate from Evaluation — use Evaluation for C01–C06 quality gates.
+            Inspect what the agents did: steps, tool calls, model usage, latency, and errors. Use
+            Evaluation for C01–C06 quality gates.
           </p>
         </div>
         <div className="eval-controls">
           <label>
-            Chart / selection run
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+              Chart / selection run
+              <HelpTooltip text="Pick the selection or chart run whose persisted execution timeline you want to inspect." />
+            </span>
             <select
               value={activeRunId || ""}
               onChange={(event) => onSelectRun(event.target.value)}
             >
-              <option value="">Select run…</option>
+              <option value="">Select a run…</option>
               {chartRuns.map((run) => (
                 <option key={run.id} value={run.id}>
                   {(run.family || "run") +
@@ -240,7 +245,7 @@ export default function ObservabilityScreen({
               activeRunId && window.open(`/api/runs/${activeRunId}/trace`, "_blank")
             }
           >
-            Download run trace (JSON)
+            Download run trace
           </button>
         </div>
       </div>
@@ -248,15 +253,20 @@ export default function ObservabilityScreen({
       {!activeRunId ? (
         <div className="panel">
           <p className="doc-sub" style={{ margin: 0 }}>
-            Select a run to inspect its execution timeline. No invented metrics are shown.
+            Select a run to inspect its execution timeline. Only measured metrics are shown.
           </p>
         </div>
       ) : loading && !report ? (
-        <div className="panel">Loading observability…</div>
+        <div className="panel">
+          <SkeletonBlock variant="panel" label="Loading observability" />
+          <p className="doc-sub" style={{ marginBottom: 0 }}>
+            Loading run timeline…
+          </p>
+        </div>
       ) : !report ? (
         <div className="panel">
           <p className="doc-sub" style={{ margin: 0 }}>
-            No observability payload for this run.
+            No execution trace recorded for this run yet.
           </p>
         </div>
       ) : (
@@ -287,34 +297,49 @@ export default function ObservabilityScreen({
           </div>
 
           <div className="dash-metrics" style={{ marginBottom: 14 }}>
-            <div className="dash-metric" title="Persisted trace events">
-              <div className="dash-metric-label">Events</div>
+            <div className="dash-metric">
+              <div className="dash-metric-label">
+                Events <HelpTooltip text="Count of persisted timeline events for this run." />
+              </div>
               <div className="dash-metric-value">{summary?.event_count ?? "—"}</div>
             </div>
-            <div className="dash-metric" title="Measured model call latency sum">
-              <div className="dash-metric-label">Latency total</div>
+            <div className="dash-metric">
+              <div className="dash-metric-label">
+                Latency total{" "}
+                <HelpTooltip text="Sum of measured model-call latency across the run." />
+              </div>
               <div className="dash-metric-value">
                 {formatMs(summary?.latency_ms_total)}
               </div>
             </div>
-            <div className="dash-metric" title="Sum of total_tokens from model calls">
-              <div className="dash-metric-label">Tokens</div>
+            <div className="dash-metric">
+              <div className="dash-metric-label">
+                Tokens <HelpTooltip text="Total tokens reported by model calls in this run." />
+              </div>
               <div className="dash-metric-value">
                 {(summary?.total_tokens ?? 0).toLocaleString()}
               </div>
             </div>
-            <div className="dash-metric" title="Measured actual_cost_usd from provider usage">
-              <div className="dash-metric-label">Actual cost</div>
+            <div className="dash-metric">
+              <div className="dash-metric-label">
+                Actual cost{" "}
+                <HelpTooltip text="Provider-reported actual_cost_usd from usage records — not an estimate." />
+              </div>
               <div className="dash-metric-value">
                 {formatUsd(summary?.actual_cost_usd)}
               </div>
             </div>
-            <div className="dash-metric" title="Events with errors">
-              <div className="dash-metric-label">Errors</div>
+            <div className="dash-metric">
+              <div className="dash-metric-label">
+                Errors <HelpTooltip text="Timeline events that recorded an error payload." />
+              </div>
               <div className="dash-metric-value">{summary?.error_count ?? 0}</div>
             </div>
-            <div className="dash-metric" title="Model / tool / handoff counts">
-              <div className="dash-metric-label">Model · tool · handoff</div>
+            <div className="dash-metric">
+              <div className="dash-metric-label">
+                Model · tool · handoff{" "}
+                <HelpTooltip text="Breakdown of model calls, tool invocations, and agent handoffs." />
+              </div>
               <div className="dash-metric-value" style={{ fontSize: 18 }}>
                 {summary?.model_calls ?? 0} · {summary?.tool_events ?? 0} ·{" "}
                 {summary?.handoff_events ?? 0}

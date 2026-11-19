@@ -16,6 +16,8 @@ type Props = {
   /** Chart target edition — used to flag wrong-version citations. */
   targetEdition?: string | null;
   evidenceTierLabel?: string | null;
+  /** When true, omit inline View in Doc (shown on the proof-card header instead). */
+  hideViewInDoc?: boolean;
 };
 
 type AddedShot = {
@@ -52,7 +54,8 @@ export default function EvidenceBlockCard({
   active = false,
   onOpenDocument,
   compact = false,
-  targetEdition = null
+  targetEdition = null,
+  hideViewInDoc = false
 }: Props) {
   const [quoteExpanded, setQuoteExpanded] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
@@ -345,7 +348,7 @@ export default function EvidenceBlockCard({
                 {addedShots.length ? ` · ${addedShots.length} added` : ""}
                 {" · click to enlarge"}
               </figcaption>
-              {onOpenDocument ? (
+              {onOpenDocument && !hideViewInDoc ? (
                 <button type="button" className="secondary view-in-doc" onClick={openDoc}>
                   {active ? "Showing in Doc" : "View in Doc"}
                 </button>
@@ -358,7 +361,7 @@ export default function EvidenceBlockCard({
                   ? "Screenshot removed. Use + to add one."
                   : "No screenshot available for this citation."}
               </p>
-              {onOpenDocument ? (
+              {onOpenDocument && !hideViewInDoc ? (
                 <button type="button" className="secondary view-in-doc" onClick={openDoc}>
                   {active ? "Showing in Doc" : "View in Doc"}
                 </button>

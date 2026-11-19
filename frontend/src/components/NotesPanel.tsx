@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
+import InlineSpinner from "./InlineSpinner";
 import type { ChartRevision, ChartRow } from "../types";
 
 type Thread = {
@@ -86,7 +87,7 @@ export default function NotesPanel({ row, revision, analystName, onNotice }: Pro
   return (
     <div className="notes-panel">
       <p className="doc-sub" style={{ marginTop: 0 }}>
-        Notes for <strong className="evd-mono">{row.label}</strong> — persisted on the server.
+        Analyst notes for <strong className="evd-mono">{row.label}</strong> — saved with the run.
       </p>
 
       <label className="notes-compose">
@@ -95,7 +96,7 @@ export default function NotesPanel({ row, revision, analystName, onNotice }: Pro
           rows={3}
           value={body}
           onChange={(e) => setBody(e.target.value)}
-          placeholder="Analyst note, follow-up, or assignment context…"
+          placeholder="Follow-up, assignment context, or review note…"
         />
       </label>
       <button
@@ -104,11 +105,15 @@ export default function NotesPanel({ row, revision, analystName, onNotice }: Pro
         disabled={busy || !body.trim()}
         onClick={() => void createNote()}
       >
-        {busy ? "Saving…" : "Save note"}
+        {busy ? "Saving note…" : "Save note"}
       </button>
 
       <div className="notes-list">
-        {loading ? <p className="doc-sub">Loading notes…</p> : null}
+        {loading ? (
+          <p className="doc-sub" style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <InlineSpinner label="Loading notes" /> Loading notes…
+          </p>
+        ) : null}
         {!loading && !threads.length ? (
           <p className="doc-sub">No notes yet for this element.</p>
         ) : null}

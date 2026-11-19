@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import InlineSpinner from "./InlineSpinner";
 import type { ChangeLogEntry, ChartRevision, EvidenceBlock } from "../types";
 
 export type EvidenceEditDraft = {
@@ -177,8 +178,8 @@ export default function ClaimEditModal({
         </header>
 
         <p className="doc-sub">
-          Update section-wise evidence details. Save creates a new Manual revision, logs the change,
-          and re-runs AI Review.
+          Update evidence details for this claim element. Saving creates a Manual revision, logs the
+          change, and re-runs AI review.
         </p>
 
         <div className="claim-edit-authorship-bar" role="group" aria-label="Filter by authorship">
@@ -368,7 +369,13 @@ export default function ClaimEditModal({
             Cancel
           </button>
           <button type="button" className="primary" disabled={busy} onClick={handleSave}>
-            {busy ? "Saving…" : "Save row"}
+            {busy ? (
+              <>
+                <InlineSpinner label="Saving" /> Saving row…
+              </>
+            ) : (
+              "Save row"
+            )}
           </button>
         </div>
       </div>

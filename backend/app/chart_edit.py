@@ -273,6 +273,73 @@ def record_change_log(
     return log_id
 
 
+def _field_diff(
+    old: dict[str, Any] | None, new: dict[str, Any] | None
+) -> list[dict[str, str]]:
+    """Build Changed column / old / new rows for revision log UI."""
+    old = old or {}
+    new = new or {}
+    fields = (
+        ("mapping_label", "Mapping label"),
+        ("rationale", "Rationale"),
+        ("evidence_ids", "Evidence"),
+        ("missing_requirements", "Missing requirements"),
+        ("match_strength", "Match strength"),
+        ("requirement_applicability", "Requirement applicability"),
+    )
+
+    def _fmt(key: str, value: Any) -> str:
+        if value is None or value == "":
+            return "—"
+        if key in {"evidence_ids", "missing_requirements"}:
+            if isinstance(value, list):
+                if not value:
+                    return "—"
+                if key == "evidence_ids":
+                    return f"{len(value)} passage(s)"
+                return "; ".join(str(item) for item in value if str(item).strip()) or "—"
+            return str(value)
+        text = str(value).strip()
+        return text if text else "—"
+
+    changes: list[dict[str, str]] = []
+    for key, label in fields:
+        old_v = _fmt(key, old.get(key))
+        new_v = _fmt(key, new.get(key))
+        if old_v == new_v:
+            continue
+        changes.append(
+            {
+                "column": label,
+                "old_value": old_v,
+                "new_value": new_v,
+            }
+        )
+    return changes
+
+
+def _revision_snapshot(connection: Any, revision_id: str | None) -> dict[str, Any] | None:
+    if not revision_id:
+        return None
+    row = connection.execute(
+        "SELECT * FROM row_revisions WHERE id=?", (revision_id,)
+    ).fetchone()
+    if not row:
+        return None
+    return {
+        "mapping_label": row["mapping_label"],
+        "rationale": row["rationale"],
+        "evidence_ids": json.loads(row["evidence_ids_json"] or "[]"),
+        "missing_requirements": json.loads(row["missing_requirements_json"] or "[]"),
+        "match_strength": row["match_strength"] if "match_strength" in row.keys() else None,
+        "requirement_applicability": (
+            row["requirement_applicability"]
+            if "requirement_applicability" in row.keys()
+            else None
+        ),
+    }
+
+
 def list_change_logs(element_id: str, *, limit: int = 50) -> list[dict[str, Any]]:
     ensure_chart_edit_schema()
     with connect() as connection:
@@ -285,13 +352,117 @@ def list_change_logs(element_id: str, *, limit: int = 50) -> list[dict[str, Any]
             """,
             (element_id, limit),
         ).fetchall()
-    out = []
-    for row in rows:
-        item = dict(row)
-        item["snapshot"] = json.loads(item.pop("snapshot_json") or "{}")
-        item["origin_label"] = origin_label(item.get("origin"))
-        out.append(item)
-    return out
+        out = []
+        for row in rows:
+            item = dict(row)
+            prior_snap = json.loads(item.pop("snapshot_json") or "{}")
+            item["snapshot"] = prior_snap
+            item["origin_label"] = origin_label(item.get("origin"))
+            # Who column for UI: AI vs Analyst only
+            origin = str(item.get("origin") or "")
+            item["who"] = (
+                "Analyst"
+                if origin in {"human", "agent"}
+                or "analyst" in str(item.get("actor") or "").lower()
+                else "AI"
+            )
+            new_snap = _revision_snapshot(connection, item.get("revision_id"))
+            item["changes"] = _field_diff(prior_snap, new_snap)
+            out.append(item)
+        return out
+
+
+def list_revision_log(element_id: str, *, limit: int = 100) -> list[dict[str, Any]]:
+    """Full revision history with field-level diffs for the claim-chart UI."""
+    ensure_chart_edit_schema()
+    with connect() as connection:
+        revisions = connection.execute(
+            """
+            SELECT * FROM row_revisions
+            WHERE element_id=?
+            ORDER BY revision_number ASC, created_at ASC
+            """,
+            (element_id,),
+        ).fetchall()
+        logs = connection.execute(
+            """
+            SELECT * FROM row_change_logs
+            WHERE element_id=?
+            ORDER BY created_at DESC
+            """,
+            (element_id,),
+        ).fetchall()
+    log_by_rev = {row["revision_id"]: dict(row) for row in logs}
+    entries: list[dict[str, Any]] = []
+    prev_snap: dict[str, Any] | None = None
+    for revision in revisions:
+        new_snap = {
+            "mapping_label": revision["mapping_label"],
+            "rationale": revision["rationale"],
+            "evidence_ids": json.loads(revision["evidence_ids_json"] or "[]"),
+            "missing_requirements": json.loads(
+                revision["missing_requirements_json"] or "[]"
+            ),
+            "match_strength": (
+                revision["match_strength"] if "match_strength" in revision.keys() else None
+            ),
+            "requirement_applicability": (
+                revision["requirement_applicability"]
+                if "requirement_applicability" in revision.keys()
+                else None
+            ),
+        }
+        changes = _field_diff(prev_snap, new_snap)
+        if not changes and prev_snap is not None:
+            prev_snap = new_snap
+            continue
+        log = log_by_rev.get(revision["id"])
+        if log:
+            origin = str(log.get("origin") or "")
+            who = (
+                "Analyst"
+                if origin in {"human", "agent"}
+                or "analyst" in str(log.get("actor") or "").lower()
+                else "AI"
+            )
+            actor = str(log.get("actor") or who)
+            summary = str(log.get("summary") or "")
+            created_at = log.get("created_at") or revision["created_at"]
+        else:
+            # Initial / agent remap without an edit log → AI
+            who = "AI"
+            actor = revision["model_name"] or "mapping agent"
+            summary = (
+                "Initial mapping"
+                if prev_snap is None
+                else f"Revision {revision['revision_number']}"
+            )
+            created_at = revision["created_at"]
+        if not changes and prev_snap is None:
+            changes = [
+                {
+                    "column": "Mapping label",
+                    "old_value": "—",
+                    "new_value": str(new_snap.get("mapping_label") or "—"),
+                }
+            ]
+        for change in changes:
+            entries.append(
+                {
+                    "revision_id": revision["id"],
+                    "revision_number": revision["revision_number"],
+                    "column": change["column"],
+                    "old_value": change["old_value"],
+                    "new_value": change["new_value"],
+                    "who": who,
+                    "actor": actor,
+                    "summary": summary,
+                    "created_at": created_at,
+                }
+            )
+        prev_snap = new_snap
+    entries.reverse()
+    return entries[:limit]
 
 
 def merge_chart_edit_into_checks(

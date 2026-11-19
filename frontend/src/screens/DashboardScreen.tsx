@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import HelpTooltip from "../components/HelpTooltip";
+import SkeletonBlock from "../components/SkeletonBlock";
 import { api } from "../api";
 
 type Props = {
@@ -82,8 +84,11 @@ function MetricCard({
   definition: string;
 }) {
   return (
-    <div className="dash-metric" title={definition}>
-      <div className="dash-metric-label">{label}</div>
+    <div className="dash-metric">
+      <div className="dash-metric-label">
+        {label}
+        {definition ? <HelpTooltip text={definition} /> : null}
+      </div>
       <div className="dash-metric-value">{value}</div>
     </div>
   );
@@ -178,16 +183,25 @@ export default function DashboardScreen({
               <option value="30d">Last 30 days</option>
             </select>
           </label>
-          <button className="ghost" onClick={() => refresh()}>
-            Refresh
+          <button className="ghost" disabled={loading} onClick={() => refresh()}>
+            {loading ? "Refreshing…" : "Refresh dashboard"}
           </button>
         </div>
       </div>
 
       {!data?.email?.configured ? (
         <div className="warn-box" style={{ marginBottom: 14 }}>
-          Email not configured. Analysis, Dashboard and downloads still work — messages are not
+          Email not configured. Analysis, dashboard, and downloads still work — messages are not
           sent until EMAIL_PROVIDER is set.
+        </div>
+      ) : null}
+
+      {loading && !data ? (
+        <div className="panel" style={{ marginBottom: 14 }}>
+          <SkeletonBlock variant="page" label="Loading dashboard" />
+          <p className="doc-sub" style={{ marginBottom: 0 }}>
+            Loading workspace metrics…
+          </p>
         </div>
       ) : null}
 

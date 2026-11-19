@@ -1307,9 +1307,12 @@ def edit_mapping(revision_id: str, request: MappingEditRequest) -> dict[str, Any
 
 @app.get("/api/elements/{element_id}/change-logs")
 def get_element_change_logs(element_id: str) -> dict[str, Any]:
-    from .chart_edit import list_change_logs
+    from .chart_edit import list_change_logs, list_revision_log
 
-    return {"items": list_change_logs(element_id)}
+    return {
+        "items": list_change_logs(element_id),
+        "revision_log": list_revision_log(element_id),
+    }
 
 
 @app.post("/api/rows/{revision_id}/revert")
@@ -1765,6 +1768,8 @@ def export(run_id: str, final: bool = False):
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Export failed: {exc}") from exc
     return FileResponse(
         path,
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",

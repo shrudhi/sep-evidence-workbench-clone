@@ -22,14 +22,14 @@ from .evidence import resolve_evidence_blocks
 from .model_provider import OpenAICompatibleProvider
 
 CRITERIA = [
-    ("C01", "right_standard", "Correct standard"),
-    ("C02", "quote_verbatim", "Verbatim evidence"),
-    ("C03", "source_page", "Source accuracy"),
-    ("C04", "screenshot_match", "Screenshot accuracy"),
-    ("C05", "rationale_supports", "Rationale accuracy"),
-    ("C06", "label_correct", "Mapping label accuracy"),
-    ("C07", "claim_coverage", "Claim coverage"),
-    ("C08", "normative_compliance", "Normative/optional compliance"),
+    ("C01", "right_standard", "Correct standard document"),
+    ("C02", "quote_verbatim", "Quote matches the original text"),
+    ("C03", "source_page", "Citation points to the right place"),
+    ("C04", "screenshot_match", "Screenshot attached for the cited page"),
+    ("C05", "rationale_supports", "Explanation matches the evidence"),
+    ("C06", "label_correct", "Mapping label is correct"),
+    ("C07", "claim_coverage", "Every claim part is covered"),
+    ("C08", "normative_compliance", "Mandatory gaps are not overstated"),
 ]
 
 Status = Literal["Pass", "Fail", "Needs review", "Not run", "Not applicable", "Error"]
@@ -267,7 +267,7 @@ def _diagnose_criterion(
                 "passage used in the evidence block."
             ),
             "C04": (
-                "Ensure every supporting evidence block has a screenshot crop for the cited page "
+                "Ensure every supporting evidence block has a screenshot linked to the cited page "
                 "and highlight provenance before export."
             ),
             "C05": (
@@ -1031,12 +1031,23 @@ def _check_evidence_blocks(
             quote_fail.append(f"{eid}: quote not found on PDF page {page_ord}")
             page_fail.append(f"{eid}: page {page_ord} does not contain quote")
 
-        if not block.get("screenshot_url"):
-            shot_fail.append(f"{eid}: missing screenshot_url")
-        elif not block.get("bbox"):
-            shot_review.append(f"{eid}: screenshot linked (bbox empty)")
+        shot_url = block.get("screenshot_url") or block.get("screenshot_path")
+        page_ord = block.get("page_ordinal")
+        if not shot_url:
+            shot_fail.append(f"{eid}: missing screenshot for cited evidence")
+        elif page_ord is None or page_ord == "":
+            shot_fail.append(f"{eid}: screenshot present but not linked to a cited PDF page")
         else:
-            shot_review.append(f"{eid}: screenshot linked with crop provenance")
+            # Auto-check: screenshot exists and is provenance-linked to the cited page.
+            # Does NOT OCR/compare pixels to the quote — that is a roadmap item.
+            if block.get("bbox") or block.get("quote_bbox"):
+                shot_review.append(
+                    f"{eid}: screenshot linked to document page {page_ord} with crop box"
+                )
+            else:
+                shot_review.append(
+                    f"{eid}: screenshot linked to document page {page_ord} (page-level; crop box empty)"
+                )
 
     results["C01"] = {
         "status": "Fail" if std_fail else "Pass",
@@ -1067,17 +1078,30 @@ def _check_evidence_blocks(
         results["C04"] = {
             "status": "Fail",
             "reason": "; ".join(shot_fail),
-            "evidence": [{"evidence_id": b.get("evidence_id"), "screenshot_url": b.get("screenshot_url")} for b in blocks],
+            "evidence": [
+                {
+                    "evidence_id": b.get("evidence_id"),
+                    "screenshot_url": b.get("screenshot_url") or b.get("screenshot_path"),
+                    "page_ordinal": b.get("page_ordinal"),
+                }
+                for b in blocks
+            ],
         }
     else:
-        # Auto-pass when every supporting block has a linked screenshot. Expert visual
-        # QA remains available via adjudication; do not treat presence as Needs review
-        # or product metrics permanently show 0/3.
+        # Pass = screenshot attached and page-linked. Visual/OCR proof that the crop
+        # shows the quote is roadmap (human or vision adjudicator) — not claimed here.
         results["C04"] = {
             "status": "Pass",
             "reason": "; ".join(shot_review)
-            or "Every evidence block has a linked screenshot_url for the cited passage.",
-            "evidence": [{"evidence_id": b.get("evidence_id"), "screenshot_url": b.get("screenshot_url")} for b in blocks],
+            or "Every evidence block has a screenshot linked to its cited PDF page.",
+            "evidence": [
+                {
+                    "evidence_id": b.get("evidence_id"),
+                    "screenshot_url": b.get("screenshot_url") or b.get("screenshot_path"),
+                    "page_ordinal": b.get("page_ordinal"),
+                }
+                for b in blocks
+            ],
         }
     return results
 

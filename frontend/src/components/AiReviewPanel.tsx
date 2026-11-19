@@ -1,3 +1,4 @@
+import InlineSpinner from "./InlineSpinner";
 import type {
   AiReview,
   AiReviewCheck,
@@ -19,18 +20,18 @@ type Props = {
   onApplyFix: (changeIds?: string[]) => void;
 };
 
-/** Three user-facing statuses only — no Correction / Ambiguous split. */
+/** Aligned with Auto Review Status / rationale-column AI pills. */
 const STATUS_LABELS: Record<string, string> = {
-  running: "Reviewing…",
-  passed: "Passed",
-  needs_correction: "Needs Review",
-  incomplete: "Review Incomplete",
-  ambiguous: "Passed",
-  sent_back: "Needs Review",
-  attention: "Passed",
-  flagged: "Passed",
-  pending: "Review Incomplete",
-  unavailable: "Review Incomplete"
+  running: "AI- Review Pending",
+  passed: "AI- Verified",
+  needs_correction: "AI- Need Review",
+  incomplete: "AI- Review Pending",
+  ambiguous: "AI- Verified",
+  sent_back: "AI- Need Review",
+  attention: "AI- Verified",
+  flagged: "AI- Verified",
+  pending: "AI- Review Pending",
+  unavailable: "AI- Review Pending"
 };
 
 const CHECK_LABELS: Record<string, string> = {
@@ -82,7 +83,11 @@ function hasFailedCriteria(review?: AiReview | null): boolean {
   return allReviewChecks(review).some((check) => check.status === "fail");
 }
 
-/** Needs Review only when the claim report failed a check or has an applyable fix. */
+function hasUnverifiedCriteria(review?: AiReview | null): boolean {
+  return allReviewChecks(review).some((check) => check.status === "unverified");
+}
+
+/** Needs Review when a check failed, is unverified, or has an applyable fix. */
 function effectiveReviewStatus(review?: AiReview | null): string {
   if (!review) return "pending";
   if (hasFailedCriteria(review) || hasConcreteRecommendations(review)) {
@@ -92,12 +97,15 @@ function effectiveReviewStatus(review?: AiReview | null): string {
   if (raw === "incomplete" || raw === "pending" || raw === "unavailable" || raw === "running") {
     return raw;
   }
+  if (hasUnverifiedCriteria(review) || raw === "needs_correction") {
+    return "needs_correction";
+  }
   return "passed";
 }
 
 export function aiReviewStatusLabel(review?: AiReview | null): string {
-  if (!review) return "AI review pending";
-  return STATUS_LABELS[effectiveReviewStatus(review)] || "Passed";
+  if (!review) return "AI- Review Pending";
+  return STATUS_LABELS[effectiveReviewStatus(review)] || "AI- Verified";
 }
 
 export function aiReviewStatusKind(
@@ -189,7 +197,13 @@ function RecommendationCard({
         </p>
       ) : null}
       <button type="button" className="secondary" disabled={busy} onClick={onApply}>
-        {busy ? "Applying…" : `Apply ${ACTION_LABELS[change.action] || change.action}`}
+        {busy ? (
+          <>
+            <InlineSpinner label="Applying" /> Applying…
+          </>
+        ) : (
+          `Apply ${ACTION_LABELS[change.action] || change.action}`
+        )}
       </button>
     </li>
   );
@@ -210,13 +224,15 @@ export default function AiReviewPanel({
   const label = aiReviewStatusLabel(review);
   const reason =
     status === "passed"
-      ? "Mapping and supporting evidence satisfy the review criteria."
+      ? "Mapping and supporting evidence meet the automated review criteria."
       : review?.explanation ||
         review?.reason ||
-        (status === "running" ? "Checking this row." : "No review result yet.");
+        (status === "running" ? "Running automated checks on this row…" : "No review result yet.");
   const sourceReviews = review?.source_reviews || [];
   const claimChecks = review?.claim_checks || review?.checks || [];
-  const failedChecks = allReviewChecks(review).filter((check) => check.status === "fail");
+  const blockingChecks = allReviewChecks(review).filter(
+    (check) => check.status === "fail" || check.status === "unverified"
+  );
   const recommendations = (review?.recommendations || review?.suggested_changes || []).filter(
     isConcreteRecommendation
   );
@@ -231,7 +247,7 @@ export default function AiReviewPanel({
     <div className="ai-review-pane" role="region" aria-label={`AI review for ${row.label}`}>
       <header className="ai-review-header">
         <h3 tabIndex={-1} id="ai-review-title">
-          AI review · {row.label}
+          Analysis report · {row.label}
         </h3>
         <p className={`ai-review-verdict kind-${aiReviewStatusKind(review)}`}>{label}</p>
         <p className="ai-review-reason">{reason}</p>
@@ -258,16 +274,16 @@ export default function AiReviewPanel({
         </div>
       </section>
 
-      {showNeedsReview && failedChecks.length ? (
-        <section className="ai-review-fix-card" aria-label="Failed criteria">
-          <div className="evidence-label">Failed criteria</div>
+      {showNeedsReview && blockingChecks.length ? (
+        <section className="ai-review-fix-card" aria-label="Issues to resolve">
+          <div className="evidence-label">Issues to resolve</div>
           <p className="doc-sub">
-            Each failed check includes the reason. Apply a recommendation below when a concrete
-            chart update is available, or edit the row.
+            Failed or unverified checks keep this row in AI- Need Review. Apply a recommendation
+            below when a concrete chart update is available, or edit the row.
           </p>
           <ul className="ai-review-checks">
-            {failedChecks.map((check, index) => (
-              <CheckCard key={`fail-${check.id}-${index}`} check={check} />
+            {blockingChecks.map((check, index) => (
+              <CheckCard key={`block-${check.id}-${index}`} check={check} />
             ))}
           </ul>
         </section>
@@ -302,10 +318,10 @@ export default function AiReviewPanel({
 
       {recommendations.length ? (
         <section className="ai-review-fix-card" aria-label="Recommendations">
-          <div className="evidence-label">Update with correct detail</div>
+          <div className="evidence-label">Suggested chart updates</div>
           <p className="doc-sub">
-            Concrete chart updates from failed criteria. Apply one at a time or all together. Each
-            apply creates a new revision and logs your name.
+            Concrete fixes from failed criteria. Apply one at a time or all together. Each apply
+            creates a new revision and logs your name.
           </p>
           <ul className="ai-review-checks">
             {recommendations.map((change) => (
@@ -325,7 +341,13 @@ export default function AiReviewPanel({
                 disabled={busy}
                 onClick={() => onApplyFix(applyable.map((change) => change.id))}
               >
-                {busy ? "Applying…" : `Apply all (${applyable.length})`}
+                {busy ? (
+                  <>
+                    <InlineSpinner label="Applying" /> Applying all…
+                  </>
+                ) : (
+                  `Apply all (${applyable.length})`
+                )}
               </button>
             </div>
           ) : null}
@@ -340,13 +362,27 @@ export default function AiReviewPanel({
           Ask agent
         </button>
         <button type="button" className="secondary" onClick={onEdit}>
-          Edit
+          Edit manually
         </button>
         <button type="button" className="secondary" disabled={busy} onClick={onRequestRevision}>
-          Request revision
+          {busy ? (
+            <>
+              <InlineSpinner label="Requesting" /> Requesting…
+            </>
+          ) : (
+            "Request revision"
+          )}
         </button>
         <button type="button" className="ghost" disabled={busy} onClick={onRerun}>
-          {status === "incomplete" ? "Try again" : "Rerun review"}
+          {busy ? (
+            <>
+              <InlineSpinner label="Rerunning" /> Rerunning…
+            </>
+          ) : status === "incomplete" ? (
+            "Try again"
+          ) : (
+            "Rerun review"
+          )}
         </button>
       </div>
     </div>

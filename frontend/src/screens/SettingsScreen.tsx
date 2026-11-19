@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
+import HelpTooltip from "../components/HelpTooltip";
+import InlineSpinner from "../components/InlineSpinner";
 import { api } from "../api";
 import {
   automationPayload,
@@ -88,8 +90,8 @@ export default function SettingsScreen({ projectId, automation, onSaved, onNotic
     <section>
       <h1 className="page-title">Settings</h1>
       <p className="page-sub">
-        Workspace defaults for automation and delivery. Per-analysis Customize overrides these
-        without changing the defaults. Existing runs keep the policy snapshotted at start.
+        Workspace defaults for automation and delivery. Customize on a run overrides these without
+        changing the defaults. Existing runs keep the policy snapshotted at start.
       </p>
 
       <div className="panel">
@@ -106,7 +108,10 @@ export default function SettingsScreen({ projectId, automation, onSaved, onNotic
       </div>
 
       <div className="panel" style={{ marginTop: 16 }}>
-        <h3>Default delivery mode</h3>
+        <h3 style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+          Default delivery mode
+          <HelpTooltip text="Controls whether completed charts wait for analyst approval before email, or send once required checks pass." />
+        </h3>
         <label className="check-row" style={{ marginTop: 10 }}>
           <input
             type="radio"
@@ -126,8 +131,8 @@ export default function SettingsScreen({ projectId, automation, onSaved, onNotic
           <span>Send automatically when all required checks pass</span>
         </label>
         <p style={{ color: "var(--muted)", fontSize: 13, margin: "8px 0 0" }}>
-          Review-before-sending always requires explicit approval. Automatic mode still pauses for
-          unresolved required reviews, failures, or mandatory evidence-integrity issues.
+          Review-before-sending always needs explicit approval. Automatic mode still pauses for
+          unresolved required reviews, failures, or mandatory evidence issues.
         </p>
       </div>
 
@@ -189,7 +194,10 @@ export default function SettingsScreen({ projectId, automation, onSaved, onNotic
           <span>Attach Word chart bundle when a completed deliverable is authorized</span>
         </label>
         <label style={{ display: "block", marginTop: 12 }}>
-          Maximum automatic repair attempts
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+            Maximum automatic repair attempts
+            <HelpTooltip text="How many times the system may auto-retry a failed mapping before pausing for analyst review (0–3)." />
+          </span>
           <input
             type="number"
             min={0}
@@ -211,7 +219,13 @@ export default function SettingsScreen({ projectId, automation, onSaved, onNotic
       <div className="footer-bar">
         <p>Changes apply to future runs only.</p>
         <button className="primary" disabled={saving || invalid.length > 0} onClick={() => save()}>
-          {saving ? "Saving…" : "Save workspace defaults"}
+          {saving ? (
+            <>
+              <InlineSpinner label="Saving" /> Saving defaults…
+            </>
+          ) : (
+            "Save workspace defaults"
+          )}
         </button>
       </div>
     </section>

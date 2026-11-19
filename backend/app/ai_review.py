@@ -331,9 +331,8 @@ def _review_sources(
                     _check("Screenshot match", "na", "No screenshot to check."),
                     _check(
                         "Version and section",
-                        "unverified",
+                        "na",
                         "No cited edition or section to verify.",
-                        recommendation="Add a cite from the selected standard, or keep No map.",
                     ),
                 ],
             }
@@ -844,9 +843,15 @@ def _overall_status(
             reason = (fails[0]["reason"] if fails else None) or "One or more review criteria failed."
         return "needs_correction", str(reason)[:400]
 
-    # Unverified / model-ambiguous with no failed criteria is not a report failure —
-    # Partial/No map gaps are chart facts, not Needs Review.
-    if model_outcome == "passed" or all(c.get("status") in {"pass", "na", "unverified"} for c in all_checks):
+    # Unverified checks block Passed — analyst must resolve (e.g. missing section/clause).
+    if unverified:
+        reason = (
+            unverified[0].get("reason")
+            or "One or more review criteria could not be verified."
+        )
+        return "needs_correction", str(reason)[:400]
+
+    if model_outcome == "passed" or all(c.get("status") in {"pass", "na"} for c in all_checks):
         return "passed", "Mapping and supporting evidence satisfy the review criteria."
 
     return "passed", "Mapping and supporting evidence satisfy the review criteria."
@@ -1042,8 +1047,13 @@ def assemble_review(
         suggestions=recommendations,
     )
 
-    # Needs Review ONLY when the claim-report output failed a criterion or has a concrete fix.
-    # Factual Partial/No-map gaps (what is missing) are not Needs Review.
+    # Needs Review when a criterion failed, a concrete fix exists, or something is unverified.
+    has_unverified = any(c.get("status") == "unverified" for c in flat_checks)
+    unverified_reasons = [
+        str(c.get("reason") or "")
+        for c in flat_checks
+        if c.get("status") == "unverified" and str(c.get("reason") or "").strip()
+    ]
     if has_verified_fail or recommendations:
         status = "needs_correction"
         reason = (
@@ -1054,6 +1064,14 @@ def assemble_review(
         )
     elif status == "incomplete" and not has_verified_fail:
         recommendations = []
+    elif has_unverified:
+        recommendations = []
+        status = "needs_correction"
+        reason = (
+            unverified_reasons[0]
+            if unverified_reasons
+            else "One or more review criteria could not be verified."
+        )
     else:
         recommendations = []
         status = "passed"
@@ -1540,6 +1558,64 @@ def ai_review_from_checks(checks: dict[str, Any] | None) -> dict[str, Any] | Non
     if not isinstance(review, dict):
         return None
     return _normalize_stored_review(review)
+
+
+def _review_has_failed_check(review: dict[str, Any] | None) -> bool:
+    if not review:
+        return False
+    for source in review.get("source_reviews") or []:
+        for check in source.get("checks") or []:
+            if check.get("status") == "fail":
+                return True
+    for check in review.get("claim_checks") or review.get("checks") or []:
+        if check.get("status") == "fail":
+            return True
+    return False
+
+
+def _review_has_applyable_fix(review: dict[str, Any] | None) -> bool:
+    if not review:
+        return False
+    for change in review.get("recommendations") or review.get("suggested_changes") or []:
+        if change.get("applyable") is False:
+            continue
+        action = change.get("action")
+        if action == "add" and (change.get("researched_quote") or "").strip() and change.get(
+            "evidence_id"
+        ):
+            return True
+        if action == "remove" and change.get("evidence_id"):
+            return True
+        if action == "update":
+            target = change.get("target")
+            if target == "rationale" and (change.get("rationale") or "").strip():
+                return True
+            if target in {"mapping_label", "label"} and change.get("mapping_label"):
+                return True
+    return False
+
+
+def effective_ai_review_status(review: dict[str, Any] | None) -> str:
+    """Mirror frontend AiReviewPanel: Needs Review only on real failures/fixes."""
+    if not review:
+        return "pending"
+    if _review_has_failed_check(review) or _review_has_applyable_fix(review):
+        return "needs_correction"
+    raw = str(review.get("status") or "pending")
+    if raw in {"incomplete", "pending", "unavailable", "running"}:
+        return raw
+    return "passed"
+
+
+def row_ready_for_final(
+    *,
+    analyst_disposition: str | None,
+    ai_review: dict[str, Any] | None,
+) -> bool:
+    """Final export gate: AI Review Passed OR analyst Accept/Reject."""
+    if (analyst_disposition or "").strip():
+        return True
+    return effective_ai_review_status(ai_review) == "passed"
 
 
 def maybe_review_revision(revision_id: str) -> dict[str, Any] | None:

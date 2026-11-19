@@ -258,3 +258,47 @@ def test_incomplete_without_model(monkeypatch: pytest.MonkeyPatch):
     )
     assert result["status"] == "incomplete"
     assert result["recommendations"] == []
+
+
+def test_missing_section_is_needs_review_not_passed(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(
+        ai_review,
+        "OpenAICompatibleProvider",
+        lambda: _FakeProvider(
+            data={
+                "outcome": "passed",
+                "label_check": {
+                    "status": "pass",
+                    "reason": "The rationale correctly identifies the gap.",
+                },
+                "rationale_check": {
+                    "status": "pass",
+                    "reason": "Rationale matches the cited quotes.",
+                },
+                "recommendations": [],
+            }
+        ),
+    )
+    monkeypatch.setattr(ai_review, "_research_passages", lambda **_k: [])
+    missing_section = {**GOOD_BLOCK, "section_ref": "", "section_label": ""}
+    result = ai_review.assemble_review(
+        label="Partial map",
+        claim_text="orthogonal transform…",
+        rationale="Partial — no orthogonal transformation mention.",
+        blocks=[missing_section],
+        target_document_id="doc-1",
+        target_family="H.265",
+        target_edition="V10",
+        target_title="High efficiency video coding",
+    )
+    assert result["status"] == "needs_correction"
+    assert result["status_label"] == "Needs Review"
+    assert "section" in (result.get("reason") or "").lower()
+    version_checks = [
+        c
+        for s in result["source_reviews"]
+        for c in (s.get("checks") or [])
+        if c.get("id") == "Version and section"
+    ]
+    assert version_checks
+    assert version_checks[0]["status"] == "unverified"

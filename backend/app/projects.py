@@ -181,17 +181,14 @@ def setup_bundle(project_id: str) -> dict[str, Any]:
             )
         ]
     standards = [doc for doc in documents if doc["kind"] == "standard"]
-    # Default candidate pool = all indexed standards; analyst may narrow before Start.
+    # Keep the analyst's screening pool; only drop IDs that are no longer indexed.
     indexed_ids = [item["id"] for item in standards if item.get("status") == "indexed"]
     selected_ids = [
         item_id
         for item_id in (project.get("selected_standard_ids") or [])
         if item_id in indexed_ids
     ]
-    if not selected_ids and indexed_ids:
-        project = update_project(project_id, {"selected_standard_ids": indexed_ids})
-        selected_ids = indexed_ids
-    elif selected_ids != (project.get("selected_standard_ids") or []):
+    if selected_ids != (project.get("selected_standard_ids") or []):
         project = update_project(project_id, {"selected_standard_ids": selected_ids})
     suggestions = suggest_standards(patent or {}, standards) if patent else []
     suggestion_map = {item["document_id"]: item for item in suggestions}
@@ -217,15 +214,16 @@ def setup_bundle(project_id: str) -> dict[str, Any]:
             "workspace_defaults": get_workspace_defaults(project_id),
         },
         "suggestion_disclaimer": (
-            "Start runs a selection agent over every indexed standard. You confirm "
-            "which standard(s) to chart next — default is the recommended target only."
+            "Select which indexed standards to evaluate, then Get recommendations. "
+            "Each selected option returns accepted or rejected. Confirm which "
+            "standard(s) to chart next — default is the accepted target only."
         ),
         "flow": {
             "path": "select_then_confirm",
             "claim_scope": "claim_1",
             "next_step": (
-                "After Start, review the recommended standard and any rejected "
-                "candidates in litigator terms, then confirm which document(s) to chart."
+                "Select standards to evaluate, review accepted / rejected outcomes, "
+                "then confirm which document(s) to chart."
             ),
         },
     }

@@ -35,49 +35,49 @@
     {
       "id": "C01",
       "key": "right_standard",
-      "name": "Right standard",
-      "pass_condition": "Every evidence block uses the intended standard and exact edition; recommendation selects the appropriate candidate"
+      "name": "Correct standard document",
+      "pass_condition": "Evidence is taken from the expected standard edition (for this demo: H.265 version 10)."
     },
     {
       "id": "C02",
       "key": "quote_verbatim",
-      "name": "Quote real and verbatim",
-      "pass_condition": "Every displayed quote is found in its original source; only documented layout normalization is allowed"
+      "name": "Quote matches the original text",
+      "pass_condition": "The quote appears on the cited page as written (only ordinary spacing differences allowed)."
     },
     {
       "id": "C03",
       "key": "source_page",
-      "name": "Source and page correct",
-      "pass_condition": "File identity, section, 1-based PDF page and printed page correspond to the passage"
+      "name": "Citation points to the right place",
+      "pass_condition": "Document edition, section, and page references all point to the same passage as the quote."
     },
     {
       "id": "C04",
       "key": "screenshot_match",
-      "name": "Screenshot matches quote",
-      "pass_condition": "Original-source crop contains the cited passage with enough surrounding context"
+      "name": "Screenshot attached for the cited page",
+      "pass_condition": "Screenshot present and linked to the cited PDF page (auto-check does not OCR the image; visual/OCR match is roadmap)."
     },
     {
       "id": "C05",
       "key": "rationale_supports",
-      "name": "Rationale supports element",
-      "pass_condition": "Explains each requirement, actual support, unresolved gaps and conditions"
+      "name": "Explanation matches the evidence",
+      "pass_condition": "The explanation covers real support and any material gaps, consistent with the mapping label."
     },
     {
       "id": "C06",
       "key": "label_correct",
-      "name": "Mapping label accuracy",
-      "pass_condition": "Label follows the agreed policy for the complete aligned element"
+      "name": "Mapping label is correct",
+      "pass_condition": "The chart’s Full / Partial / No map label matches the labelled reference for that claim part."
     },
     {
       "id": "C07",
       "key": "claim_coverage",
-      "name": "Claim coverage",
+      "name": "Every claim part is covered",
       "pass_condition": "Every reference claim element is aligned to generated chart rows with matching claim text"
     },
     {
       "id": "C08",
       "key": "normative_compliance",
-      "name": "Normative/optional compliance",
+      "name": "Mandatory gaps are not overstated",
       "pass_condition": "Mandatory gaps and optional/informative clauses are not over-claimed as Full map"
     }
   ],

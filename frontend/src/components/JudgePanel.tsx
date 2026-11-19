@@ -281,11 +281,11 @@ export default function JudgePanel({
             <strong>Check the source</strong> — confirm the quote and citation on the page.
           </li>
           <li>
-            <strong>Ask Agent to revise</strong> — proposes a new chart revision (evidence /
-            rationale / label). Accept the proposal in Ask Agent to update the chart.
+            <strong>Ask agent to revise</strong> — proposes a new chart revision (evidence /
+            rationale / label). Accept the proposal in Ask agent to update the chart.
           </li>
           <li>
-            <strong>Accept or override</strong> — accept the Mapping Review finding, or override
+            <strong>Accept or override</strong> — accept the mapping review finding, or override
             it with a recorded reason.
           </li>
         </ol>
@@ -301,19 +301,19 @@ export default function JudgePanel({
               )
             }
           >
-            Ask Agent to revise
+            Ask agent to revise
           </button>
           <button type="button" className="ghost" onClick={onAddComment}>
-            Comments
+            Add comments
           </button>
           {onAccept ? (
             <button type="button" className="secondary" disabled={busy} onClick={onAccept}>
-              Accept finding
+              {busy ? "Accepting…" : "Accept finding"}
             </button>
           ) : null}
           {onOverrideJudge ? (
             <button type="button" className="ghost" disabled={busy} onClick={onOverrideJudge}>
-              Override Judge
+              {busy ? "Overriding…" : "Override judge"}
             </button>
           ) : null}
           {onReject ? (
@@ -606,7 +606,7 @@ export default function JudgePanel({
                                       )
                                     }
                                   >
-                                    Ask Agent to fix this
+                                    Ask agent to fix this
                                   </button>
                                 ) : null}
                               </div>

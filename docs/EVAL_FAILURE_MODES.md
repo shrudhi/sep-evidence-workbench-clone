@@ -15,7 +15,7 @@ C01–C03 (edition / quote / page) were already honest Passes on the live H.265 
 
 ## Fixes shipped
 
-1. **C04** — Auto-**Pass** when every evidence block has `screenshot_url`; **Fail** only when missing/unavailable.
+1. **C04** — Auto-**Pass** when every evidence block has a screenshot **linked to the cited PDF page**; **Fail** if missing or not page-linked. Does **not** OCR/compare crop-to-quote yet (roadmap: vision/OCR adjudicator).
 2. **C05** — Grader prompt prefers Pass/Fail; deterministic fallback Passes clear Partial-map rationales that state support + gaps when the LLM stays on Needs review/Error.
 3. **C06 fine-split policy** — When gold is Partial map and aligned generated labels include ≥1 Partial with **no** Full-map overclaim, grade **Pass** (No-map sub-parts allowed). Pure No-map vs expected Partial still Fails. Locked workbook scores remain 0/3; new Evaluation runs use the policy.
 
@@ -43,7 +43,7 @@ Attorney-ready: **No** — Conditional Go; expert review required.
 1. Prefer Claim-1 split toward gold’s 3-part limitation structure (fine-split Pass is a safety net, not a substitute).
 2. Bias retrieval toward gold-like clause/page priors for chroma QP (without hardcoding the winner standard).
 3. Require Partial rationales to emit structured `missing_requirements` and grade against that schema.
-4. Keep C04 presence auto-pass; add optional vision adjudicator later for crop-vs-quote mismatch (Fail only on mismatch).
+4. Keep C04 as screenshot attached + page-linked; add OCR/vision adjudicator for crop-vs-quote mismatch (Fail on clear mismatch; ambiguous → Needs review).
 5. Export eval workbook + this note with every submission package; re-run Evaluation after prompt/retrieval changes.
 
 ## How to refresh artifacts

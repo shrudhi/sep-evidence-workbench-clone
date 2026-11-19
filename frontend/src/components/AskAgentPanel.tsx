@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type PointerEvent as ReactPointerEvent
+} from "react";
 import { createPortal } from "react-dom";
 import {
   History,
@@ -9,6 +16,7 @@ import {
   Trash2,
   X
 } from "lucide-react";
+import InlineSpinner from "./InlineSpinner";
 import { api } from "../api";
 import type { ChartRow, EvidenceBlock } from "../types";
 
@@ -103,6 +111,7 @@ type Props = {
   onUiStateChange?: (state: {
     historyOpen: boolean;
     layout: "normal" | "minimized" | "maximized";
+    position: { left: number; top: number } | null;
   }) => void;
 };
 
@@ -196,7 +205,11 @@ function MessageList({
   if (emptyChat) {
     return (
       <div className="ask-empty-state">
-        <h3>What can I help you with?</h3>
+        <h3>Ask about this claim element</h3>
+        <p className="doc-sub">
+          Challenge the mapping, request a revision, or dig into evidence. Accepted proposals write
+          back to the chart as Manual.
+        </p>
         <div className="ask-suggestion-list">
           {SUGGESTIONS.map((item) => (
             <button
@@ -247,7 +260,13 @@ function MessageList({
                 disabled={actionBusy}
                 onClick={() => onAcceptProposal(message.proposal!.id)}
               >
-                Accept — update claim
+                {actionBusy ? (
+                  <>
+                    <InlineSpinner label="Updating chart" /> Updating chart…
+                  </>
+                ) : (
+                  "Accept — update chart"
+                )}
               </button>
               <button
                 type="button"
@@ -255,7 +274,7 @@ function MessageList({
                 disabled={actionBusy}
                 onClick={() => onRejectProposal(message.proposal!.id)}
               >
-                Reject
+                {actionBusy ? "Rejecting…" : "Reject proposal"}
               </button>
             </div>
           ) : null}
@@ -308,15 +327,90 @@ export default function AskAgentPanel({
   const [historyBusy, setHistoryBusy] = useState(false);
   const [historyConversation, setHistoryConversation] = useState<AgentConversation | null>(null);
   const [layout, setLayout] = useState<PanelLayout>("normal");
+  const [dockPosition, setDockPosition] = useState<{ left: number; top: number } | null>(null);
+  const [dragging, setDragging] = useState(false);
   const [busy, setBusy] = useState(false);
   const [actionBusy, setActionBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pendingAssistantId, setPendingAssistantId] = useState<string | null>(null);
   const syncedPreferredRef = useRef<string | null>(null);
+  const dragSessionRef = useRef<{
+    pointerId: number;
+    startX: number;
+    startY: number;
+    origLeft: number;
+    origTop: number;
+    width: number;
+    height: number;
+  } | null>(null);
+
+  const effectivePosition =
+    layout === "minimized" || layout === "maximized" ? null : dockPosition;
 
   useEffect(() => {
-    onUiStateChange?.({ historyOpen, layout });
-  }, [historyOpen, layout, onUiStateChange]);
+    onUiStateChange?.({ historyOpen, layout, position: effectivePosition });
+  }, [historyOpen, layout, effectivePosition, onUiStateChange]);
+
+  const clampDockPosition = (left: number, top: number, width: number, height: number) => {
+    const pad = 8;
+    const maxLeft = Math.max(pad, window.innerWidth - width - pad);
+    const maxTop = Math.max(pad, window.innerHeight - height - pad);
+    return {
+      left: Math.min(Math.max(pad, left), maxLeft),
+      top: Math.min(Math.max(pad, top), maxTop)
+    };
+  };
+
+  const beginHeaderDrag = (event: ReactPointerEvent<HTMLElement>) => {
+    if (layout !== "normal") return;
+    const target = event.target as HTMLElement | null;
+    if (target?.closest("button, a, input, textarea, select, label")) return;
+    const overlay = event.currentTarget.closest(".ask-agent-overlay") as HTMLElement | null;
+    if (!overlay) return;
+    const rect = overlay.getBoundingClientRect();
+    dragSessionRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      origLeft: dockPosition?.left ?? rect.left,
+      origTop: dockPosition?.top ?? rect.top,
+      width: rect.width,
+      height: rect.height
+    };
+    setDragging(true);
+    event.currentTarget.setPointerCapture(event.pointerId);
+    event.preventDefault();
+  };
+
+  const moveHeaderDrag = (event: ReactPointerEvent<HTMLElement>) => {
+    const session = dragSessionRef.current;
+    if (!session || session.pointerId !== event.pointerId) return;
+    const next = clampDockPosition(
+      session.origLeft + (event.clientX - session.startX),
+      session.origTop + (event.clientY - session.startY),
+      session.width,
+      session.height
+    );
+    setDockPosition(next);
+  };
+
+  const endHeaderDrag = (event: ReactPointerEvent<HTMLElement>) => {
+    const session = dragSessionRef.current;
+    if (!session || session.pointerId !== event.pointerId) return;
+    dragSessionRef.current = null;
+    setDragging(false);
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+  };
+
+  const setPanelLayout = (next: PanelLayout | ((prev: PanelLayout) => PanelLayout)) => {
+    setLayout((prev) => {
+      const resolved = typeof next === "function" ? next(prev) : next;
+      if (resolved === "minimized") setDockPosition(null);
+      return resolved;
+    });
+  };
 
   const scopedRow = useMemo(
     () => chartRows.find((row) => row.id === scopeElementId) || selectedRow,
@@ -669,7 +763,7 @@ export default function AskAgentPanel({
       <textarea
         value={draft}
         onChange={(event) => setDraft(event.target.value)}
-        placeholder="Ask about this claim chart, patent, or standard…"
+        placeholder="Challenge the mapping, ask for a revision, or probe the evidence…"
         rows={1}
         disabled={busy || !scopedRow}
         onKeyDown={(event) => {
@@ -683,10 +777,10 @@ export default function AskAgentPanel({
         type="button"
         className="ask-send-fab"
         disabled={busy || !draft.trim()}
-        aria-label="Send"
+        aria-label={busy ? "Sending" : "Send message"}
         onClick={() => void send(draft)}
       >
-        <SendHorizontal size={16} />
+        {busy ? <InlineSpinner label="Sending" size={16} /> : <SendHorizontal size={16} />}
       </button>
     </div>
   );
@@ -716,7 +810,9 @@ export default function AskAgentPanel({
         className="ask-icon-btn"
         title={layout === "minimized" ? "Restore" : "Minimize"}
         aria-label={layout === "minimized" ? "Restore" : "Minimize"}
-        onClick={() => setLayout((prev) => (prev === "minimized" ? "normal" : "minimized"))}
+        onClick={() =>
+          setPanelLayout((prev) => (prev === "minimized" ? "normal" : "minimized"))
+        }
       >
         <Minimize2 size={16} />
       </button>
@@ -725,7 +821,9 @@ export default function AskAgentPanel({
         className="ask-icon-btn"
         title={layout === "maximized" ? "Restore" : "Maximize"}
         aria-label={layout === "maximized" ? "Restore" : "Maximize"}
-        onClick={() => setLayout((prev) => (prev === "maximized" ? "normal" : "maximized"))}
+        onClick={() =>
+          setPanelLayout((prev) => (prev === "maximized" ? "normal" : "maximized"))
+        }
       >
         <Maximize2 size={16} />
       </button>
@@ -743,6 +841,20 @@ export default function AskAgentPanel({
     </div>
   );
 
+  const headerDragProps =
+    layout === "normal"
+      ? {
+          className: `ask-chat-header is-draggable ${dragging ? "is-dragging" : ""}`,
+          title: "Drag to move",
+          onPointerDown: beginHeaderDrag,
+          onPointerMove: moveHeaderDrag,
+          onPointerUp: endHeaderDrag,
+          onPointerCancel: endHeaderDrag
+        }
+      : {
+          className: "ask-chat-header"
+        };
+
   return (
     <>
       {/* Bottom dock is hidden while the full history workspace is open. */}
@@ -753,7 +865,7 @@ export default function AskAgentPanel({
               <button
                 type="button"
                 className="ask-minimized-title"
-                onClick={() => setLayout("normal")}
+                onClick={() => setPanelLayout("normal")}
               >
                 Ask agent
                 {scopedRow ? ` · ${scopedRow.label}` : ""}
@@ -767,7 +879,7 @@ export default function AskAgentPanel({
               layout === "maximized" ? "ask-agent-maximized" : ""
             }`}
           >
-            <header className="ask-chat-header">
+            <header {...headerDragProps}>
               <strong>Ask agent</strong>
               {headerActions}
             </header>
@@ -821,13 +933,13 @@ export default function AskAgentPanel({
                     </button>
                   </header>
                   {historyBusy && !historyItems.length ? (
-                    <p className="doc-sub" style={{ padding: "0 12px" }}>
-                      Loading…
+                    <p className="doc-sub" style={{ padding: "0 12px", display: "flex", gap: 8, alignItems: "center" }}>
+                      <InlineSpinner label="Loading history" /> Loading conversations…
                     </p>
                   ) : null}
                   {!historyBusy && !historyItems.length ? (
                     <div className="empty" style={{ padding: 16 }}>
-                      No conversations yet.
+                      No conversations yet for this chart.
                     </div>
                   ) : (
                     <ul className="ask-history-list">

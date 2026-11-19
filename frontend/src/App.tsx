@@ -12,6 +12,7 @@ import {
   X
 } from "lucide-react";
 import { api } from "./api";
+import SkeletonBlock from "./components/SkeletonBlock";
 import WorkflowStepper from "./components/WorkflowStepper";
 import SetupScreen from "./screens/SetupScreen";
 import ClaimChartsScreen from "./screens/ClaimChartsScreen";
@@ -211,7 +212,9 @@ export default function App() {
       });
       setActiveRunId(created.id);
       setScreen("setup");
-      setNotice("Selection running — recommend / reject rationales will appear here when ready.");
+      setNotice(
+        "Evaluating selected standards — each option will return accepted or rejected with a rationale."
+      );
       await refresh();
     } catch (error) {
       setNotice((error as Error).message || "Start analysis failed");
@@ -269,11 +272,15 @@ export default function App() {
       const response = await fetch(url);
       if (!response.ok) {
         let detail = `Export failed (${response.status})`;
-        try {
-          const body = await response.json();
-          if (typeof body?.detail === "string") detail = body.detail;
-        } catch {
-          /* ignore */
+        const raw = (await response.text()).trim();
+        if (raw) {
+          try {
+            const body = JSON.parse(raw) as { detail?: unknown };
+            if (typeof body?.detail === "string") detail = body.detail;
+            else detail = raw.slice(0, 400);
+          } catch {
+            detail = raw.slice(0, 400);
+          }
         }
         setNotice(detail);
         return;
@@ -396,7 +403,7 @@ export default function App() {
             }`}
             onClick={() => goWorkflowStep("setup")}
             disabled={!workflowGates.setup.unlocked}
-            title="Setup — patent, claims, and target standard"
+            title="Setup — choose patent and confirm the standard to chart"
           >
             <Layers3 size={16} />
             {!navCollapsed ? "Setup" : null}
@@ -409,7 +416,7 @@ export default function App() {
             disabled={!workflowGates.charts.unlocked}
             title={
               workflowGates.charts.unlocked
-                ? "Claim charts"
+                ? "Claim charts — evidence, AI review, and analyst decisions"
                 : workflowGates.charts.lockReason
             }
           >
@@ -424,12 +431,12 @@ export default function App() {
             disabled={!workflowGates.sep_report.unlocked}
             title={
               workflowGates.sep_report.unlocked
-                ? "SEP Report — download the created claim chart report"
+                ? "SEP report — download draft or reviewed-final chart"
                 : workflowGates.sep_report.lockReason
             }
           >
             <ScrollText size={16} />
-            {!navCollapsed ? "SEP Report" : null}
+            {!navCollapsed ? "SEP report" : null}
           </button>
         </div>
 
@@ -447,7 +454,7 @@ export default function App() {
               screen === "evaluations" || screen === "evaluations_legacy" ? "active" : ""
             }`}
             onClick={() => setScreen("evaluations")}
-            title="Evaluation — internal quality scoring only (not attorney-facing)"
+            title="Evaluation — internal quality gates only (not attorney-facing)"
           >
             <ClipboardCheck size={16} />
             {!navCollapsed ? (
@@ -460,7 +467,7 @@ export default function App() {
           <button
             className={`nav-item ${screen === "observability" ? "active" : ""}`}
             onClick={() => setScreen("observability")}
-            title="Observability — internal execution traces only (not attorney-facing)"
+            title="Observability — run steps, tools, and latency (internal)"
           >
             <Activity size={16} />
             {!navCollapsed ? (
@@ -497,14 +504,15 @@ export default function App() {
             <strong>{projectName}</strong>
           </div>
           <div className="saved">
-            <Check size={14} /> {setup?.project.save_status === "saved" ? "Saved" : "Saving"}
+            <Check size={14} />{" "}
+            {setup?.project.save_status === "saved" ? "All changes saved" : "Saving…"}
           </div>
         </header>
 
         {notice ? (
           <div className="notice">
             <span>{notice}</span>
-            <button onClick={() => setNotice(null)} aria-label="Dismiss">
+            <button onClick={() => setNotice(null)} aria-label="Dismiss notification">
               <X size={15} />
             </button>
           </div>
@@ -520,11 +528,16 @@ export default function App() {
             />
           ) : null}
           {!setup ? (
-            <div className="empty">Loading workspace…</div>
+            <div className="empty">
+              <SkeletonBlock variant="page" label="Loading workspace" />
+              <p className="doc-sub" style={{ marginTop: 12, marginBottom: 0 }}>
+                Loading your workspace…
+              </p>
+            </div>
           ) : screen === "dashboard" ? (
             // Dashboard is WIP — keep Screen type & DashboardScreen.tsx for later.
             <div className="empty">
-              Dashboard is temporarily hidden while we continue work. Use Setup to continue.
+              Dashboard is temporarily unavailable. Continue from Setup.
               <div style={{ marginTop: 12 }}>
                 <button type="button" className="primary" onClick={() => setScreen("setup")}>
                   Go to Setup
@@ -542,6 +555,11 @@ export default function App() {
               onResetAutomation={resetAutomation}
               onStart={() => startAnalysis()}
               onConfirmTargets={confirmTargets}
+              onOpenCharts={() => setScreen("charts")}
+              hasChartRun={runs.some((run) =>
+                ["analyst_review", "complete", "mapping", "reviewing"].includes(run.status) &&
+                !run.selection_only
+              )}
               selectionStatus={selectionStatusForSetup}
               onRefresh={refresh}
               onNotice={setNotice}
@@ -568,7 +586,6 @@ export default function App() {
           ) : screen === "sep_report" || screen === "conclusion" ? (
             <SepReportScreen
               setup={setup}
-              runs={runs}
               chart={chart}
               onOpenCharts={(rowId) => {
                 if (rowId) setFocusRowId(rowId);

@@ -1,3 +1,5 @@
+import { useState } from "react";
+import { ChevronDown, ChevronRight, ExternalLink } from "lucide-react";
 import { pageGroupKey, formatPrintedPage } from "../evidenceQuote";
 import type { EvidenceBlock } from "../types";
 import EvidenceBlockCard from "./EvidenceBlockCard";
@@ -12,11 +14,10 @@ type Props = {
   evidenceTierLabel?: string | null;
 };
 
-function groupLabel(blocks: EvidenceBlock[], index: number, total: number): string {
+function groupMeta(blocks: EvidenceBlock[], index: number, total: number) {
   const first = blocks[0];
-  if (!first) return "Passages";
-  const printed = formatPrintedPage(first.printed_label);
-  const pdf = first.page_ordinal;
+  const printed = first ? formatPrintedPage(first.printed_label) : null;
+  const pdf = first?.page_ordinal;
   const page =
     printed && pdf != null
       ? `Printed p. ${printed} · PDF p. ${pdf}`
@@ -25,8 +26,8 @@ function groupLabel(blocks: EvidenceBlock[], index: number, total: number): stri
         : pdf != null
           ? `PDF p. ${pdf}`
           : "Page not resolved";
-  if (total > 1) return `Proof ${index + 1} of ${total} · ${page}`;
-  return page;
+  const title = total > 1 ? `Proof ${index + 1} of ${total}` : `Proof 1 of 1`;
+  return { title, page };
 }
 
 export default function EvidencePassageList({
@@ -38,11 +39,6 @@ export default function EvidencePassageList({
   targetEdition = null,
   evidenceTierLabel = null
 }: Props) {
-  if (!blocks.length) {
-    return <div className="evidence-empty">{emptyLabel}</div>;
-  }
-
-  // One group per PDF page so each page keeps its own Source / Quote / Screenshot.
   const groups: { key: string; blocks: EvidenceBlock[] }[] = [];
   for (const block of blocks) {
     const key = pageGroupKey(block);
@@ -51,37 +47,76 @@ export default function EvidencePassageList({
     else groups.push({ key, blocks: [block] });
   }
 
-  const multiPage = groups.length > 1;
+  const [openKeys, setOpenKeys] = useState<Record<string, boolean>>(() => {
+    const initial: Record<string, boolean> = {};
+    groups.forEach((group, index) => {
+      initial[group.key] = index === 0;
+    });
+    return initial;
+  });
+
+  if (!blocks.length) {
+    return <div className="evidence-empty">{emptyLabel}</div>;
+  }
 
   return (
-    <div className="evidence-passage-list">
+    <div className="evidence-passage-list proof-card-list">
       {title ? <div className="evidence-passage-list-title">{title}</div> : null}
-      {multiPage ? (
-        <div className="doc-sub" style={{ marginBottom: 8 }}>
-          Evidence spans {groups.length} pages — each page has its own quote and screenshot.
-        </div>
-      ) : null}
-      {groups.map((group, index) => (
-        <section key={group.key} className="evidence-page-group">
-          {multiPage ? (
-            <header className="evidence-page-group-head">
-              <span className="evidence-page-group-label">
-                {groupLabel(group.blocks, index, groups.length)}
-              </span>
+      {groups.map((group, index) => {
+        const meta = groupMeta(group.blocks, index, groups.length);
+        const open = openKeys[group.key] ?? index === 0;
+        const lead = group.blocks[0];
+        return (
+          <section
+            key={group.key}
+            className={`proof-card ${open ? "is-open" : "is-collapsed"}`}
+          >
+            <header className="proof-card-head">
+              <button
+                type="button"
+                className="proof-card-toggle"
+                aria-expanded={open}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  setOpenKeys((prev) => ({ ...prev, [group.key]: !open }));
+                }}
+              >
+                {open ? <ChevronDown size={14} aria-hidden /> : <ChevronRight size={14} aria-hidden />}
+                <span className="proof-card-title">{meta.title}</span>
+                <span className="proof-card-page">{meta.page}</span>
+              </button>
+              {lead && onOpenDocument ? (
+                <button
+                  type="button"
+                  className="proof-view-doc"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onOpenDocument(lead);
+                  }}
+                >
+                  View in Doc
+                  <ExternalLink size={13} aria-hidden />
+                </button>
+              ) : null}
             </header>
-          ) : null}
-          {group.blocks.map((block) => (
-            <EvidenceBlockCard
-              key={block.evidence_id}
-              block={block}
-              active={activeEvidenceId === block.evidence_id}
-              onOpenDocument={onOpenDocument}
-              targetEdition={targetEdition}
-              evidenceTierLabel={evidenceTierLabel}
-            />
-          ))}
-        </section>
-      ))}
+            {open ? (
+              <div className="proof-card-body">
+                {group.blocks.map((block) => (
+                  <EvidenceBlockCard
+                    key={block.evidence_id}
+                    block={block}
+                    active={activeEvidenceId === block.evidence_id}
+                    onOpenDocument={onOpenDocument}
+                    targetEdition={targetEdition}
+                    evidenceTierLabel={evidenceTierLabel}
+                    hideViewInDoc
+                  />
+                ))}
+              </div>
+            ) : null}
+          </section>
+        );
+      })}
     </div>
   );
 }

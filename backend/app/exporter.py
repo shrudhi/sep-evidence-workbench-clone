@@ -6,25 +6,163 @@ from typing import Any
 import pypdfium2 as pdfium
 from docx import Document
 from docx.enum.section import WD_ORIENT
-from docx.enum.text import WD_BREAK
-from docx.shared import Inches, Pt
+from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_BREAK
+from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
+from docx.shared import Inches, Pt, RGBColor
 
 from .config import get_settings
 from .database import connect, utcnow
 from .evidence import mapping_display, resolve_evidence_blocks
 
 
+def _enable_background_shapes(document: Document) -> None:
+    """Required so Word draws header watermarks behind body/table text."""
+    from docx.oxml import parse_xml
+
+    settings = document.settings.element
+    if settings.find(qn("w:displayBackgroundShape")) is None:
+        settings.append(parse_xml('<w:displayBackgroundShape xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"/>'))
+
+
+def _draft_watermark_shape(text: str = "DRAFT") -> OxmlElement:
+    """Diagonal background watermark — sits behind table text, lightly visible."""
+    # Escape for attribute context; watermark text is fixed/controlled.
+    safe = (
+        text.replace("&", "&amp;")
+        .replace('"', "&quot;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
+    # Classic Word watermark: VML textpath in the header, negative z-index.
+    xml = f"""
+    <w:r xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+         xmlns:v="urn:schemas-microsoft-com:vml"
+         xmlns:o="urn:schemas-microsoft-com:office:office"
+         xmlns:w10="urn:schemas-microsoft-com:office:word">
+      <w:rPr><w:noProof/></w:rPr>
+      <w:pict>
+        <v:shapetype id="_x0000_t136" coordsize="21600,21600" o:spt="136"
+          adj="10800" path="m@7,l@8,m@5,21600l@6,21600e">
+          <v:formulas>
+            <v:f eqn="sum #0 0 10800"/>
+            <v:f eqn="prod #0 2 1"/>
+            <v:f eqn="sum 21600 0 @1"/>
+            <v:f eqn="sum 0 0 @2"/>
+            <v:f eqn="sum 21600 0 @3"/>
+            <v:f eqn="if @0 @3 0"/>
+            <v:f eqn="if @0 21600 @1"/>
+            <v:f eqn="if @0 0 @2"/>
+            <v:f eqn="if @0 @4 21600"/>
+            <v:f eqn="mid @5 @6"/>
+            <v:f eqn="mid @8 @5"/>
+            <v:f eqn="mid @7 @8"/>
+            <v:f eqn="mid @6 @7"/>
+            <v:f eqn="sum @6 0 @5"/>
+          </v:formulas>
+          <v:path textpathok="t" o:connecttype="custom"
+            o:connectlocs="@9,0;@10,10800;@11,21600;@12,10800" o:connectangles="270,180,90,0"/>
+          <v:textpath on="t" fitshape="t"/>
+          <v:handles>
+            <v:h position="#0,bottomRight" xrange="6629,14971"/>
+          </v:handles>
+          <o:lock v:ext="edit" text="t" shapetype="t"/>
+        </v:shapetype>
+        <v:shape id="PowerPlusWaterMarkObject" o:spid="_x0000_s2049" type="#_x0000_t136"
+          style="position:absolute;margin-left:0;margin-top:0;width:540pt;height:135pt;
+                 rotation:315;z-index:-251658240;mso-position-horizontal:center;
+                 mso-position-horizontal-relative:margin;mso-position-vertical:center;
+                 mso-position-vertical-relative:margin"
+          o:allowincell="f" fillcolor="#bfbfbf" stroked="f">
+          <v:fill opacity=".35"/>
+          <v:textpath style="font-family:&quot;Calibri&quot;;font-size:1pt;font-weight:bold"
+            string="{safe}"/>
+          <w10:wrap anchorx="margin" anchory="margin"/>
+        </v:shape>
+      </w:pict>
+    </w:r>
+    """
+    from docx.oxml import parse_xml
+
+    return parse_xml(xml)
+
+
+def _apply_draft_markings(document: Document, designation: str) -> None:
+    """Background watermark + header/footer so draft copies are unmistakable."""
+    _enable_background_shapes(document)
+    banner = "DRAFT — WORKING COPY · NOT FOR DELIVERY"
+    for section in document.sections:
+        header = section.header
+        header.is_linked_to_previous = False
+        # Clear default empty paragraph content, then rebuild.
+        for paragraph in list(header.paragraphs):
+            p = paragraph._element
+            p.getparent().remove(p)
+        # Watermark paragraph first (behind body); banner stays in the header band.
+        mark = header.add_paragraph()
+        mark.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        mark._p.append(_draft_watermark_shape("DRAFT"))
+        title = header.add_paragraph()
+        title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        run = title.add_run(banner)
+        run.bold = True
+        run.font.size = Pt(11)
+        run.font.color.rgb = RGBColor(0xC0, 0x00, 0x00)
+
+        footer = section.footer
+        footer.is_linked_to_previous = False
+        for paragraph in list(footer.paragraphs):
+            p = paragraph._element
+            p.getparent().remove(p)
+        foot = footer.add_paragraph()
+        foot.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        foot_run = foot.add_run(f"{designation}  ·  Page ")
+        foot_run.font.size = Pt(8)
+        foot_run.font.color.rgb = RGBColor(0xC0, 0x00, 0x00)
+        # PAGE field
+        fld_begin = OxmlElement("w:fldChar")
+        fld_begin.set(qn("w:fldCharType"), "begin")
+        instr = OxmlElement("w:instrText")
+        instr.set(qn("xml:space"), "preserve")
+        instr.text = " PAGE "
+        fld_sep = OxmlElement("w:fldChar")
+        fld_sep.set(qn("w:fldCharType"), "separate")
+        fld_end = OxmlElement("w:fldChar")
+        fld_end.set(qn("w:fldCharType"), "end")
+        page_run = foot.add_run()
+        page_run._r.append(fld_begin)
+        page_run._r.append(instr)
+        page_run._r.append(fld_sep)
+        page_run._r.append(fld_end)
+        page_run.font.size = Pt(8)
+        page_run.font.color.rgb = RGBColor(0xC0, 0x00, 0x00)
+
+
 def resolve_export_designation(
-    *, requested_final: bool, all_decided: bool, corpus: dict[str, Any]
+    *,
+    requested_final: bool,
+    all_decided: bool,
+    corpus: dict[str, Any],
+    all_review_ready: bool | None = None,
 ) -> str:
+    """Designate draft vs reviewed final.
+
+    ``all_review_ready`` is the preferred gate (AI Review Passed or Accept/Reject).
+    ``all_decided`` remains for older callers/tests; if ``all_review_ready`` is
+    omitted, fall back to ``all_decided``.
+    """
     corpus_complete = corpus.get("complete") is True
+    ready = all_decided if all_review_ready is None else all_review_ready
     if requested_final and not corpus_complete:
         missing = ", ".join(corpus.get("missing_standard_ids") or ["unknown standard"])
         raise ValueError(
             f"Final export is blocked until the run includes the full corpus: {missing}"
         )
-    if requested_final and not all_decided:
-        raise ValueError("Final export requires an analyst decision for every row")
+    if requested_final and not ready:
+        raise ValueError(
+            "Final export requires every row to be AI Review Passed "
+            "or to have an analyst Accept/Reject disposition"
+        )
     if requested_final:
         return "REVIEWED FINAL"
     if corpus_complete:
@@ -177,13 +315,17 @@ def _latest_rows(connection, run_id: str):
     return connection.execute(
         """
         SELECT ce.ordinal,ce.label,ce.exact_text,rr.*,rev.disposition AS review_disposition,
-               rev.reasons_json,ad.disposition AS analyst_disposition,ad.comment
+               rev.reasons_json,rev.checks_json AS review_checks_json,
+               ad.disposition AS analyst_disposition,ad.comment
         FROM claim_elements ce
         JOIN row_revisions rr ON rr.id=(
           SELECT id FROM row_revisions x WHERE x.element_id=ce.id
           ORDER BY x.revision_number DESC,x.created_at DESC LIMIT 1
         )
-        LEFT JOIN review_results rev ON rev.revision_id=rr.id
+        LEFT JOIN review_results rev ON rev.id=(
+          SELECT id FROM review_results y WHERE y.revision_id=rr.id
+          ORDER BY y.created_at DESC LIMIT 1
+        )
         LEFT JOIN analyst_decisions ad ON ad.id=(
           SELECT id FROM analyst_decisions y WHERE y.revision_id=rr.id
           ORDER BY y.created_at DESC LIMIT 1
@@ -262,13 +404,30 @@ def export_docx(run_id: str, requested_final: bool = False) -> Path:
         if not run:
             raise KeyError("Unknown run")
         rows = _latest_rows(connection, run_id)
+    from .ai_review import ai_review_from_checks, row_ready_for_final
+
     model_config = json.loads(run["model_config_json"])
     corpus = model_config.get("corpus") or {}
-    corpus_complete = corpus.get("complete") is True
     all_decided = bool(rows) and all(row["analyst_disposition"] for row in rows)
+    ready_flags = []
+    for row in rows:
+        checks_raw = row["review_checks_json"] if "review_checks_json" in row.keys() else None
+        checks = json.loads(checks_raw or "{}") if checks_raw else {}
+        review = ai_review_from_checks(checks if isinstance(checks, dict) else {})
+        ready_flags.append(
+            row_ready_for_final(
+                analyst_disposition=row["analyst_disposition"],
+                ai_review=review,
+            )
+        )
+    all_review_ready = bool(rows) and all(ready_flags)
     designation = resolve_export_designation(
-        requested_final=requested_final, all_decided=all_decided, corpus=corpus
+        requested_final=requested_final,
+        all_decided=all_decided,
+        all_review_ready=all_review_ready,
+        corpus=corpus,
     )
+    corpus_complete = corpus.get("complete") is True
 
     document = Document()
     section = document.sections[0]
@@ -281,10 +440,24 @@ def export_docx(run_id: str, requested_final: bool = False) -> Path:
     styles = document.styles
     styles["Normal"].font.name = "Calibri"
     styles["Normal"].font.size = Pt(9)
+    is_draft = designation != "REVIEWED FINAL"
+    if is_draft:
+        _apply_draft_markings(document, designation)
     family = run["family"] or "Standard"
     edition = run["edition"] or ""
     document.add_heading(f"Claim chart: {family} {edition}".strip(), level=0)
-    document.add_paragraph(designation)
+    designation_para = document.add_paragraph()
+    designation_run = designation_para.add_run(designation)
+    designation_run.bold = True
+    designation_run.font.size = Pt(12)
+    if is_draft:
+        designation_run.font.color.rgb = RGBColor(0xC0, 0x00, 0x00)
+        note = document.add_paragraph()
+        note_run = note.add_run(
+            "This is a DRAFT working copy. Do not treat as the reviewed final deliverable."
+        )
+        note_run.italic = True
+        note_run.font.color.rgb = RGBColor(0xC0, 0x00, 0x00)
     document.add_paragraph(
         f"Granted Claim 1 | {family} {edition} | Generated {utcnow()[:10]}\n"
         f"Run {run_id} · Source SHA-256 {run['sha256']}"
@@ -300,6 +473,18 @@ def export_docx(run_id: str, requested_final: bool = False) -> Path:
         "rationale with Full map / Partial map / No map."
     )
 
+    export_rows = [
+        row for row in rows if (row["analyst_disposition"] or "").lower() != "reject"
+    ]
+    omitted_rejected = len(rows) - len(export_rows)
+    if omitted_rejected:
+        omit_note = document.add_paragraph()
+        omit_run = omit_note.add_run(
+            f"{omitted_rejected} claim element(s) were Rejected by the analyst and are "
+            "omitted from this chart (element + standard evidence removed from delivery)."
+        )
+        omit_run.italic = True
+
     table = document.add_table(rows=1, cols=3)
     table.style = "Table Grid"
     for cell, text in zip(
@@ -311,7 +496,8 @@ def export_docx(run_id: str, requested_final: bool = False) -> Path:
         for paragraph in cell.paragraphs:
             for run_obj in paragraph.runs:
                 run_obj.bold = True
-    for row in rows:
+
+    for row in export_rows:
         cells = table.add_row().cells
         cells[0].text = f"{row['label']}\n{row['exact_text']}"
         evidence_ids = json.loads(row["evidence_ids_json"] or "[]")
@@ -449,9 +635,10 @@ def export_docx(run_id: str, requested_final: bool = False) -> Path:
 
     document.add_heading("Disposition appendix", level=1)
     for row in rows:
+        disposition = row["analyst_disposition"] or "unresolved"
+        omit = " — omitted from chart table" if str(disposition).lower() == "reject" else ""
         document.add_paragraph(
-            f"{row['ordinal']}. {row['label']}: analyst "
-            f"{row['analyst_disposition'] or 'unresolved'}; review "
+            f"{row['ordinal']}. {row['label']}: analyst {disposition}{omit}; review "
             f"{row['review_disposition'] or 'pending'}; revision {row['revision_number']}."
         )
     document.add_heading("Source manifest", level=1)
