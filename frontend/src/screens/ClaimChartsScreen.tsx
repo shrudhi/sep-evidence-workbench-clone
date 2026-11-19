@@ -8,9 +8,13 @@ import AskAgentPanel from "../components/AskAgentPanel";
 import ClaimEditModal from "../components/ClaimEditModal";
 import DocumentViewer, { type ViewerLocation } from "../components/DocumentViewer";
 import EvidencePassageList from "../components/EvidencePassageList";
+import JudgePanel from "../components/JudgePanel";
+import NotesPanel from "../components/NotesPanel";
 import StatusChip, { mappingLabelKind } from "../components/StatusChip";
 import { preferredBbox } from "../evidenceLabels";
 import type { Chart, ChartRevision, EvidenceBlock, RunSummary, SetupBundle } from "../types";
+
+type InspectorTab = "evidence" | "judge" | "notes";
 
 const REVIEW_WIDTH_KEY = "sep.claimCharts.aiReviewWidth";
 const REVIEW_WIDTH_MIN = 300;
@@ -111,11 +115,11 @@ export default function ClaimChartsScreen({
   const [actionBusy, setActionBusy] = useState(false);
   const [actionNotice, setActionNotice] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
-  const [reviewDetailOpen, setReviewDetailOpen] = useState(false);
-  const [docViewerOpen, setDocViewerOpen] = useState(false);
+  const [inspectorTab, setInspectorTab] = useState<InspectorTab | null>(null);
   const [viewerLocation, setViewerLocation] = useState<ViewerLocation | null>(null);
   const [passageIndex, setPassageIndex] = useState(0);
   const [expandedDoc, setExpandedDoc] = useState(false);
+  const [selectedFinding, setSelectedFinding] = useState<string | null>(null);
   const [askAgentOpen, setAskAgentOpen] = useState(false);
   const [askAgentSeed, setAskAgentSeed] = useState<string | null>(null);
   const [askAgentPreferredElementId, setAskAgentPreferredElementId] = useState<string | null>(
@@ -161,14 +165,13 @@ export default function ClaimChartsScreen({
     onFocusRowConsumed?.();
   }, [focusRowId, chart?.rows, onFocusRowConsumed]);
 
-  const sidePanelOpen = reviewDetailOpen || docViewerOpen;
+  const sidePanelOpen = inspectorTab != null;
 
   useEffect(() => {
     if (!sidePanelOpen) return;
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
-        setReviewDetailOpen(false);
-        setDocViewerOpen(false);
+        setInspectorTab(null);
         setExpandedDoc(false);
       }
     };
@@ -207,14 +210,18 @@ export default function ClaimChartsScreen({
 
   const openAiReviewPanel = (rowId: string) => {
     setSelectedRow(rowId);
-    setDocViewerOpen(false);
     setExpandedDoc(false);
-    setReviewDetailOpen(true);
+    setInspectorTab("judge");
+  };
+
+  const openNotesPanel = (rowId: string) => {
+    setSelectedRow(rowId);
+    setExpandedDoc(false);
+    setInspectorTab("notes");
   };
 
   const closeSidePanel = () => {
-    setReviewDetailOpen(false);
-    setDocViewerOpen(false);
+    setInspectorTab(null);
     setExpandedDoc(false);
   };
 
@@ -248,7 +255,6 @@ export default function ClaimChartsScreen({
   const openDocument = (block: EvidenceBlock, rowId: string) => {
     setSelectedRow(rowId);
     setActiveEvidenceId(block.evidence_id);
-    setReviewDetailOpen(false);
     const row = chart?.rows.find((item) => item.id === rowId);
     const latest = row ? latestRevision(row) : undefined;
     const passages = latest?.evidence_blocks || [];
@@ -277,7 +283,7 @@ export default function ClaimChartsScreen({
         label: [chart?.run.family, chart?.run.edition].filter(Boolean).join(" ")
       });
     }
-    setDocViewerOpen(true);
+    setInspectorTab("evidence");
     if (reviewWidth < 420) setReviewWidth(480);
   };
 
@@ -295,8 +301,7 @@ export default function ClaimChartsScreen({
   };
 
   const openAskAgentGlobal = () => {
-    setReviewDetailOpen(false);
-    setDocViewerOpen(false);
+    setInspectorTab(null);
     setExpandedDoc(false);
     setEditOpen(false);
     setAskAgentPreferredElementId(null);
@@ -307,8 +312,7 @@ export default function ClaimChartsScreen({
 
   const openAskAgentForRow = (rowId: string) => {
     setSelectedRow(rowId);
-    setReviewDetailOpen(false);
-    setDocViewerOpen(false);
+    setInspectorTab(null);
     setExpandedDoc(false);
     setEditOpen(false);
     setAskAgentPreferredElementId(rowId);
@@ -336,7 +340,7 @@ export default function ClaimChartsScreen({
       setActionNotice(`${label} done`);
       await onRefreshChart();
       if (options?.openReview || label === "AI review") {
-        setReviewDetailOpen(true);
+        setInspectorTab("judge");
       }
       options?.after?.();
     } catch (error) {
@@ -395,16 +399,9 @@ export default function ClaimChartsScreen({
                 href={`/api/runs/${activeRunId}/export?final=false`}
                 target="_blank"
                 rel="noreferrer"
+                title="Download draft Word claim chart (.docx) for this run — claim element · evidence · rationale. For reviewed final and delivery bundle, open SEP Report."
               >
-                Word export
-              </a>
-              <a
-                className="btn btn-ghost"
-                href={`/api/runs/${activeRunId}/trace`}
-                target="_blank"
-                rel="noreferrer"
-              >
-                Run trace
+                Download draft chart
               </a>
             </>
           ) : null}
@@ -668,6 +665,98 @@ export default function ClaimChartsScreen({
                                         Re-run
                                       </button>
                                     ) : null}
+                                    <button
+                                      type="button"
+                                      className="ghost"
+                                      disabled={actionBusy}
+                                      onClick={(event) => {
+                                        event.stopPropagation();
+                                        const block =
+                                          blocks.find((item) => item.available !== false) ||
+                                          blocks[0];
+                                        if (block) openDocument(block, row.id);
+                                        else {
+                                          setSelectedRow(row.id);
+                                          setInspectorTab("evidence");
+                                        }
+                                      }}
+                                    >
+                                      Evidence
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="ghost"
+                                      disabled={actionBusy}
+                                      onClick={(event) => {
+                                        event.stopPropagation();
+                                        openNotesPanel(row.id);
+                                      }}
+                                    >
+                                      Notes
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="btn-accept"
+                                      disabled={
+                                        actionBusy || latest.analyst_disposition === "accept"
+                                      }
+                                      title={
+                                        latest.analyst_disposition === "accept"
+                                          ? "Already accepted (immutable)"
+                                          : "Accept this mapping for the reviewed final export"
+                                      }
+                                      onClick={(event) => {
+                                        event.stopPropagation();
+                                        void runRowAction(
+                                          "Accept",
+                                          () =>
+                                            api(`/api/rows/${latest.id}/decision`, {
+                                              method: "POST",
+                                              body: JSON.stringify({
+                                                disposition: "accept",
+                                                comment: ""
+                                              })
+                                            }),
+                                          { revisionId: latest.id }
+                                        );
+                                      }}
+                                    >
+                                      Accept
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="btn-reject"
+                                      disabled={
+                                        actionBusy || latest.analyst_disposition === "accept"
+                                      }
+                                      title={
+                                        latest.analyst_disposition === "accept"
+                                          ? "Accepted revisions are immutable — challenge to revise"
+                                          : "Reject this mapping (can challenge later)"
+                                      }
+                                      onClick={(event) => {
+                                        event.stopPropagation();
+                                        const comment = window.prompt(
+                                          "Reject reason (optional):",
+                                          ""
+                                        );
+                                        if (comment === null) return;
+                                        void runRowAction(
+                                          "Reject",
+                                          () =>
+                                            api(`/api/rows/${latest.id}/decision`, {
+                                              method: "POST",
+                                              body: JSON.stringify({
+                                                disposition: "reject",
+                                                comment: comment.trim()
+                                              })
+                                            }),
+                                          { revisionId: latest.id }
+                                        );
+                                      }}
+                                    >
+                                      Reject
+                                    </button>
                                   </div>
                                 ) : null}
                               </div>
@@ -692,9 +781,7 @@ export default function ClaimChartsScreen({
                     className="inspector-resize-handle"
                     role="separator"
                     aria-orientation="vertical"
-                    aria-label={
-                      docViewerOpen ? "Resize document panel" : "Resize AI review panel"
-                    }
+                    aria-label="Resize inspector panel"
                     tabIndex={0}
                     onMouseDown={startReviewResize}
                   >
@@ -702,23 +789,45 @@ export default function ClaimChartsScreen({
                   </div>
                   <aside
                     className={`inspector ${
-                      docViewerOpen ? "document-inspector" : "ai-review-inspector"
+                      inspectorTab === "evidence"
+                        ? "document-inspector"
+                        : inspectorTab === "notes"
+                          ? "notes-inspector"
+                          : "ai-review-inspector"
                     } ${expandedDoc ? "doc-expanded" : ""}`}
-                    aria-label={docViewerOpen ? "Document viewer" : "AI review panel"}
+                    aria-label={
+                      inspectorTab === "evidence"
+                        ? "Evidence viewer"
+                        : inspectorTab === "notes"
+                          ? "Notes panel"
+                          : "Judge / AI review panel"
+                    }
                   >
                     <div className="inspector-toolbar">
                       <div>
                         <strong>
-                          {docViewerOpen
-                            ? `Document · ${selectedChartRow?.label || "row"}`
-                            : `AI review · ${selectedChartRow?.label || "row"}`}
+                          {selectedChartRow?.label || "Claim row"} · inspector
                         </strong>
-                        <span className="doc-sub">
-                          {docViewerOpen
-                            ? viewerLocation?.label ||
-                              "Quoted lines are darker amber; context is lighter"
-                            : "Drag the left edge to resize"}
-                        </span>
+                        <div className="inspector-tabs" role="tablist">
+                          {(
+                            [
+                              ["evidence", "Evidence"],
+                              ["judge", "Judge"],
+                              ["notes", "Notes"]
+                            ] as const
+                          ).map(([id, label]) => (
+                            <button
+                              key={id}
+                              type="button"
+                              role="tab"
+                              aria-selected={inspectorTab === id}
+                              className={inspectorTab === id ? "active" : ""}
+                              onClick={() => setInspectorTab(id)}
+                            >
+                              {label}
+                            </button>
+                          ))}
+                        </div>
                       </div>
                       <div className="inspector-toolbar-actions">
                         <button type="button" className="secondary" onClick={closeSidePanel}>
@@ -726,7 +835,7 @@ export default function ClaimChartsScreen({
                         </button>
                       </div>
                     </div>
-                    {docViewerOpen ? (
+                    {inspectorTab === "evidence" ? (
                       selectedChartRow ? (
                         <DocumentViewer
                           claimLabel={selectedChartRow.label}
@@ -756,50 +865,135 @@ export default function ClaimChartsScreen({
                       ) : (
                         <div className="empty">Select a claim row to open the document.</div>
                       )
-                    ) : selectedChartRow && selectedRevision?.ai_review ? (
-                      <AiReviewPanel
-                        row={selectedChartRow}
-                        review={selectedRevision.ai_review}
-                        busy={actionBusy}
-                        analystName={setup.project.analyst_display_name}
-                        onViewEvidence={openFirstEvidence}
-                        onAskAgent={seedAskAgentFromReview}
-                        onEdit={openEditForm}
-                        onRequestRevision={requestRevisionFromReview}
-                        onApplyFix={(changeIds) =>
-                          runRowAction(
-                            "Apply AI Review change",
-                            () =>
-                              api(`/api/rows/${selectedRevision.id}/ai-review/apply-fix`, {
-                                method: "POST",
-                                body: JSON.stringify({
-                                  analyst_name:
-                                    setup.project.analyst_display_name || "Analyst",
-                                  project_id: setup.project.id,
-                                  change_ids: changeIds || null
-                                })
-                              }),
-                            { openReview: true }
-                          )
-                        }
-                        onRerun={() =>
-                          runRowAction(
-                            "AI review",
-                            () =>
-                              api(`/api/rows/${selectedRevision.id}/ai-review`, {
-                                method: "POST"
-                              }),
-                            { openReview: true }
-                          )
-                        }
-                      />
-                    ) : (
-                      <div className="doc-sub">
-                        {actionBusy
-                          ? "Running AI review…"
-                          : "No AI review for this row yet. Click AI review in the rationale column."}
-                      </div>
-                    )}
+                    ) : null}
+                    {inspectorTab === "judge" ? (
+                      selectedChartRow && selectedRevision ? (
+                        <div className="inspector-judge-stack">
+                          {selectedRevision.judge || selectedRevision.mapping_review_status ? (
+                            <JudgePanel
+                              row={selectedChartRow}
+                              revision={selectedRevision}
+                              documentLabel={
+                                [chart?.run.family, chart?.run.edition]
+                                  .filter(Boolean)
+                                  .join(" · ") || "Standard"
+                              }
+                              selectedFinding={selectedFinding}
+                              rechecking={actionBusy}
+                              recheckNotice={actionNotice}
+                              onSelectFinding={setSelectedFinding}
+                              onViewEvidence={openFirstEvidence}
+                              onRecheck={() =>
+                                void runRowAction(
+                                  "AI review",
+                                  () =>
+                                    api(`/api/rows/${selectedRevision.id}/ai-review`, {
+                                      method: "POST"
+                                    }),
+                                  { openReview: true }
+                                )
+                              }
+                              onAskAgent={seedAskAgentFromReview}
+                              onAddComment={() => openNotesPanel(selectedChartRow.id)}
+                              onAccept={() =>
+                                void runRowAction(
+                                  "Accept",
+                                  () =>
+                                    api(`/api/rows/${selectedRevision.id}/decision`, {
+                                      method: "POST",
+                                      body: JSON.stringify({
+                                        disposition: "accept",
+                                        comment: ""
+                                      })
+                                    })
+                                )
+                              }
+                              onReject={() => {
+                                const comment = window.prompt(
+                                  "Reject reason (optional):",
+                                  ""
+                                );
+                                if (comment === null) return;
+                                void runRowAction(
+                                  "Reject",
+                                  () =>
+                                    api(`/api/rows/${selectedRevision.id}/decision`, {
+                                      method: "POST",
+                                      body: JSON.stringify({
+                                        disposition: "reject",
+                                        comment: comment.trim()
+                                      })
+                                    })
+                                );
+                              }}
+                              busy={actionBusy}
+                            />
+                          ) : null}
+                          {selectedRevision.ai_review ? (
+                            <AiReviewPanel
+                              row={selectedChartRow}
+                              review={selectedRevision.ai_review}
+                              busy={actionBusy}
+                              analystName={setup.project.analyst_display_name}
+                              onViewEvidence={openFirstEvidence}
+                              onAskAgent={seedAskAgentFromReview}
+                              onEdit={openEditForm}
+                              onRequestRevision={requestRevisionFromReview}
+                              onApplyFix={(changeIds) =>
+                                runRowAction(
+                                  "Apply AI Review change",
+                                  () =>
+                                    api(
+                                      `/api/rows/${selectedRevision.id}/ai-review/apply-fix`,
+                                      {
+                                        method: "POST",
+                                        body: JSON.stringify({
+                                          analyst_name:
+                                            setup.project.analyst_display_name || "Analyst",
+                                          project_id: setup.project.id,
+                                          change_ids: changeIds || null
+                                        })
+                                      }
+                                    ),
+                                  { openReview: true }
+                                )
+                              }
+                              onRerun={() =>
+                                runRowAction(
+                                  "AI review",
+                                  () =>
+                                    api(`/api/rows/${selectedRevision.id}/ai-review`, {
+                                      method: "POST"
+                                    }),
+                                  { openReview: true }
+                                )
+                              }
+                            />
+                          ) : !selectedRevision.judge &&
+                            !selectedRevision.mapping_review_status ? (
+                            <div className="doc-sub">
+                              {actionBusy
+                                ? "Running AI review…"
+                                : "No judge / AI review for this row yet. Click AI review in the rationale column."}
+                            </div>
+                          ) : null}
+                        </div>
+                      ) : (
+                        <div className="empty">Select a claim row to open the judge panel.</div>
+                      )
+                    ) : null}
+                    {inspectorTab === "notes" ? (
+                      selectedChartRow ? (
+                        <NotesPanel
+                          row={selectedChartRow}
+                          revision={selectedRevision || null}
+                          analystName={setup.project.analyst_display_name || "Analyst"}
+                          onNotice={(message) => setActionNotice(message)}
+                        />
+                      ) : (
+                        <div className="empty">Select a claim row to add notes.</div>
+                      )
+                    ) : null}
                   </aside>
                 </>
               ) : null}

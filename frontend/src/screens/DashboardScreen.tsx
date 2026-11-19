@@ -388,10 +388,18 @@ export default function DashboardScreen({
                       <button className="ghost" onClick={() => onOpenReview({ runId: row.run_id })}>
                         Review flagged
                       </button>
-                      <button className="ghost" onClick={() => onOpenConclusion(row.run_id)}>
-                        View report
+                      <button
+                        className="ghost"
+                        title="Open SEP Report to download the claim chart deliverable for this run"
+                        onClick={() => onOpenConclusion(row.run_id)}
+                      >
+                        SEP Report
                       </button>
-                      <a className="ghost" href={`/api/runs/${row.run_id}/export-bundle`}>
+                      <a
+                        className="ghost"
+                        href={`/api/runs/${row.run_id}/export-bundle`}
+                        title="Download the delivery ZIP (claim chart + supporting artifacts) for this run"
+                      >
                         Download bundle
                       </a>
                     </div>

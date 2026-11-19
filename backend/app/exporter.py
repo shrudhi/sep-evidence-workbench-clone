@@ -194,6 +194,21 @@ def _latest_rows(connection, run_id: str):
     ).fetchall()
 
 
+def _citation_heading(block: dict[str, Any]) -> str:
+    """Assignment/gold-chart citation line: E0x | edition | section | printed / PDF."""
+    source = block.get("source") or {}
+    section = block.get("section_ref") or block.get("section_label") or "section n/a"
+    family = (source.get("family") or "").strip()
+    edition = (source.get("edition") or "").strip()
+    # Prefer edition alone (matches gold “ITU-T H.265 (V10)…”) when present.
+    doc_id = edition or family or "unknown standard"
+    printed = block.get("printed_label") or "n/a"
+    page = block.get("page_ordinal")
+    evid = block.get("evidence_number")
+    prefix = f"E{evid:02d} | " if isinstance(evid, int) else ""
+    return f"{prefix}{doc_id} | {section} | printed {printed} / PDF {page}"
+
+
 def _write_evidence_cell(
     cell,
     evidence_ids: list[str],
@@ -201,6 +216,7 @@ def _write_evidence_cell(
     role: str = "supporting",
     preamble: str | None = None,
 ) -> None:
+    """Fill the Standard evidence column: quote · source citation · screenshot."""
     cell.text = preamble or ""
     blocks = resolve_evidence_blocks(evidence_ids, role=role)
     if not blocks:
@@ -211,42 +227,22 @@ def _write_evidence_cell(
         paragraph = cell.add_paragraph()
         if not block.get("available"):
             paragraph.add_run(
-                f"Evidence {block['evidence_number']}: {block.get('error') or 'unavailable'}"
+                f"Evidence {block.get('evidence_number') or '?'}: "
+                f"{block.get('error') or 'unavailable'}"
             )
             continue
-        source = block.get("source") or {}
-        section = block.get("section_ref") or block.get("section_label") or "section n/a"
-        page = block.get("page_ordinal")
-        quote = (block.get("quote") or "").strip().replace("\n", " ")
-        quote_preview = quote if len(quote) <= 72 else f"{quote[:69]}…"
-        heading = f"{section} · PDF p.{page} — {quote_preview}"
-        head = paragraph.add_run(f"{heading}\n")
+        head = paragraph.add_run(f"{_citation_heading(block)}\n")
         head.bold = True
-        paragraph.add_run(f"(Evidence {block['evidence_number']} · id {block['evidence_id']})\n")
-        paragraph.add_run(f"Quote: “{block.get('quote') or ''}”\n")
-        paragraph.add_run(
-            f"Source: {source.get('family') or 'unknown'} — {source.get('edition') or 'n/a'}\n"
-        )
-        paragraph.add_run(
-            f"Reference: {section}, "
-            f"printed p. {block.get('printed_label') or 'n/a'}, "
-            f"PDF p. {page}\n"
-        )
+        quote = (block.get("quote") or "").strip()
+        paragraph.add_run(f"Quote: {quote}\n" if quote else "Quote: (empty)\n")
         if role == "candidate":
-            paragraph.add_run("Role: rejected / contextual candidate\n")
+            paragraph.add_run("Role: checked candidate (not claimed as support)\n")
         try:
             screenshot, lineage = render_page_screenshot(block["evidence_id"])
             paragraph.add_run().add_picture(str(screenshot), width=Inches(2.8))
-            if lineage.get("highlight"):
-                paragraph.add_run(
-                    f"\nScreenshot lineage: {lineage['lineage_hash'][:16]}… · translucent line highlight"
-                )
-            else:
-                paragraph.add_run(
-                    f"\nScreenshot lineage: {lineage['lineage_hash'][:16]}… · Highlight unavailable"
-                )
-                if lineage.get("highlight_warning"):
-                    paragraph.add_run(f"\n{lineage['highlight_warning']}")
+            if not lineage.get("highlight"):
+                warning = lineage.get("highlight_warning") or "Highlight unavailable"
+                paragraph.add_run(f"\n{warning}")
         except Exception as exc:  # noqa: BLE001 — export must continue with visible failure
             paragraph.add_run(f"\nScreenshot failed: {exc}")
         if index < len(blocks) - 1:
@@ -278,22 +274,30 @@ def export_docx(run_id: str, requested_final: bool = False) -> Path:
     section = document.sections[0]
     section.orientation = WD_ORIENT.LANDSCAPE
     section.page_width, section.page_height = section.page_height, section.page_width
+    section.left_margin = Inches(0.6)
+    section.right_margin = Inches(0.6)
+    section.top_margin = Inches(0.55)
+    section.bottom_margin = Inches(0.55)
     styles = document.styles
-    styles["Normal"].font.name = "Aptos"
+    styles["Normal"].font.name = "Calibri"
     styles["Normal"].font.size = Pt(9)
-    document.add_heading("Clause — SEP Evidence Workbench", level=0)
+    family = run["family"] or "Standard"
+    edition = run["edition"] or ""
+    document.add_heading(f"Claim chart: {family} {edition}".strip(), level=0)
     document.add_paragraph(designation)
+    document.add_paragraph(
+        f"Granted Claim 1 | {family} {edition} | Generated {utcnow()[:10]}\n"
+        f"Run {run_id} · Source SHA-256 {run['sha256']}"
+    )
     if not corpus_complete:
         missing = ", ".join(corpus.get("missing_standard_ids") or ["unknown"])
         document.add_paragraph(
             f"NON-FINAL CORPUS: This run did not include every expected standard. Missing: {missing}."
         )
     document.add_paragraph(
-        f"Run {run_id}\nTarget document: {run['family']} — {run['edition']}\n"
-        f"Source SHA-256: {run['sha256']}\nGenerated: {utcnow()}"
-    )
-    document.add_paragraph(
-        "This is technical evidence work product, not a legal determination of essentiality."
+        "Technical evidence work product only — not a legal determination of essentiality. "
+        "Three-column format: claim element · standard evidence (quote / source / screenshot) · "
+        "rationale with Full map / Partial map / No map."
     )
 
     table = document.add_table(rows=1, cols=3)
@@ -304,6 +308,9 @@ def export_docx(run_id: str, requested_final: bool = False) -> Path:
         strict=True,
     ):
         cell.text = text
+        for paragraph in cell.paragraphs:
+            for run_obj in paragraph.runs:
+                run_obj.bold = True
     for row in rows:
         cells = table.add_row().cells
         cells[0].text = f"{row['label']}\n{row['exact_text']}"
@@ -362,20 +369,19 @@ def export_docx(run_id: str, requested_final: bool = False) -> Path:
                 else "",
             }
         )
-        # Reference-chart style: label → tags → rationale → Not established bullets.
-        rationale_parts = [
-            mapping_line,
-            (
-                f"Match: {tags['match_strength']} · Requirement: "
-                f"{tags['requirement_applicability']}"
-                + (
-                    f" ({tags['requirement_condition']})"
-                    if tags.get("requirement_condition")
-                    else ""
-                )
-            ),
-            (row["rationale"] or "").strip() or "No rationale recorded.",
-        ]
+        # Assignment/gold-chart style: mapping label → rationale → Not established bullets.
+        rationale_parts = [mapping_line]
+        tag_bits = []
+        if tags.get("match_strength"):
+            tag_bits.append(f"Match: {tags['match_strength']}")
+        if tags.get("requirement_applicability"):
+            req = f"Requirement: {tags['requirement_applicability']}"
+            if tags.get("requirement_condition"):
+                req += f" ({tags['requirement_condition']})"
+            tag_bits.append(req)
+        if tag_bits:
+            rationale_parts.append(" · ".join(tag_bits))
+        rationale_parts.append((row["rationale"] or "").strip() or "No rationale recorded.")
         if missing or mapping_line in {"Partial map", "No map"}:
             rationale_parts.append("Not established")
             if missing:
@@ -388,6 +394,9 @@ def export_docx(run_id: str, requested_final: bool = False) -> Path:
                 rationale_parts.append(
                     "• Complete claimed requirements not established from cited text alone."
                 )
+        analyst = row["analyst_disposition"]
+        if analyst:
+            rationale_parts.append(f"Analyst disposition: {analyst}")
         cells[2].text = "\n".join(rationale_parts)
 
     from .product_evidence import list_accused_products, list_product_evidence
@@ -451,6 +460,9 @@ def export_docx(run_id: str, requested_final: bool = False) -> Path:
     output_dir = settings.artifact_dir / "exports"
     output_dir.mkdir(parents=True, exist_ok=True)
     suffix = "final" if requested_final else "draft"
-    path = output_dir / f"{run_id}-{suffix}.docx"
+    family_slug = "".join(
+        ch if ch.isalnum() else "_" for ch in (run["family"] or "chart")
+    ).strip("_") or "chart"
+    path = output_dir / f"Claim1_{family_slug}_{suffix}.docx"
     document.save(path)
     return path

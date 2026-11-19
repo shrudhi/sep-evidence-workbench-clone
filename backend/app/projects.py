@@ -1,4 +1,4 @@
-"""Persistent Clause workspace / project setup state."""
+"""Persistent LexNorm workspace / project setup state."""
 
 from __future__ import annotations
 
@@ -22,7 +22,15 @@ def ensure_default_project() -> dict[str, Any]:
             "SELECT * FROM projects WHERE id=?", (DEFAULT_PROJECT_ID,)
         ).fetchone()
         if row:
-            return _project_dict(connection, dict(row))
+            item = dict(row)
+            # Rebrand legacy workspace labels without wiping other project state.
+            if item.get("workspace_label") in (None, "", "Lumenci assessment", "clause", "Clause"):
+                connection.execute(
+                    "UPDATE projects SET workspace_label=?, updated_at=? WHERE id=?",
+                    ("LexNorm", utcnow(), DEFAULT_PROJECT_ID),
+                )
+                item["workspace_label"] = "LexNorm"
+            return _project_dict(connection, item)
         now = utcnow()
         standards = [
             item["id"]
@@ -42,7 +50,7 @@ def ensure_default_project() -> dict[str, Any]:
             (
                 DEFAULT_PROJECT_ID,
                 "US10063856B2",
-                "Lumenci assessment",
+                "LexNorm",
                 "Shrudhi Satya",
                 DEFAULT_PATENT_INPUT_ID,
                 "all",

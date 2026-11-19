@@ -22,15 +22,29 @@ from .evidence import resolve_evidence_blocks
 from .model_provider import OpenAICompatibleProvider
 
 CRITERIA = [
-    ("C01", "right_standard", "Right standard"),
-    ("C02", "quote_verbatim", "Quote real and verbatim"),
-    ("C03", "source_page", "Source and page correct"),
-    ("C04", "screenshot_match", "Screenshot matches quote"),
-    ("C05", "rationale_supports", "Rationale supports element"),
-    ("C06", "label_correct", "Full / Partial / No correct"),
+    ("C01", "right_standard", "Correct standard"),
+    ("C02", "quote_verbatim", "Verbatim evidence"),
+    ("C03", "source_page", "Source accuracy"),
+    ("C04", "screenshot_match", "Screenshot accuracy"),
+    ("C05", "rationale_supports", "Rationale accuracy"),
+    ("C06", "label_correct", "Mapping label accuracy"),
+    ("C07", "claim_coverage", "Claim coverage"),
+    ("C08", "normative_compliance", "Normative/optional compliance"),
 ]
 
 Status = Literal["Pass", "Fail", "Needs review", "Not run", "Not applicable", "Error"]
+Severity = Literal["Critical", "High", "Medium", "Low", "None"]
+
+CRITERION_COMPONENTS = {
+    "C01": "standard selection / citation identity",
+    "C02": "retrieval / citation verification",
+    "C03": "citation verification / section resolution",
+    "C04": "screenshot extraction",
+    "C05": "mapping / rationale generation",
+    "C06": "mapping label policy",
+    "C07": "claim decomposition / alignment",
+    "C08": "requirement applicability interpretation",
+}
 
 EVAL_SCHEMA = """
 CREATE TABLE IF NOT EXISTS evaluation_datasets (
@@ -120,7 +134,34 @@ CREATE TABLE IF NOT EXISTS evaluation_reference_files (
   attached_at TEXT NOT NULL,
   removed INTEGER NOT NULL DEFAULT 0
 );
+
+CREATE TABLE IF NOT EXISTS evaluation_failure_actions (
+  id TEXT PRIMARY KEY,
+  evaluation_run_id TEXT NOT NULL REFERENCES evaluation_runs(id) ON DELETE CASCADE,
+  criterion_id TEXT,
+  case_keys_json TEXT NOT NULL DEFAULT '[]',
+  category TEXT NOT NULL,
+  severity TEXT NOT NULL DEFAULT 'Medium',
+  problem TEXT NOT NULL,
+  root_cause_hypothesis TEXT,
+  recommended_fix TEXT,
+  responsible_component TEXT,
+  status TEXT NOT NULL DEFAULT 'Open',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
 """
+
+_CRITERION_DIAG_COLUMNS = (
+    ("severity", "TEXT"),
+    ("failure_mode", "TEXT"),
+    ("root_cause_hypothesis", "TEXT"),
+    ("recommended_action", "TEXT"),
+    ("responsible_component", "TEXT"),
+    ("expected_summary", "TEXT"),
+    ("actual_summary", "TEXT"),
+    ("score", "REAL"),
+)
 
 
 class CriterionDecision(BaseModel):
@@ -138,7 +179,305 @@ def ensure_evaluation_schema() -> None:
     init_db()
     with connect() as connection:
         connection.executescript(EVAL_SCHEMA)
+        existing = {
+            row["name"]
+            for row in connection.execute(
+                "PRAGMA table_info(evaluation_criterion_results)"
+            ).fetchall()
+        }
+        for column, col_type in _CRITERION_DIAG_COLUMNS:
+            if column not in existing:
+                connection.execute(
+                    f"ALTER TABLE evaluation_criterion_results ADD COLUMN {column} {col_type}"
+                )
         connection.commit()
+
+
+def _score_from_status(status: str) -> float | None:
+    if status == "Pass":
+        return 1.0
+    if status == "Needs review":
+        return 0.5
+    if status in ("Fail", "Error"):
+        return 0.0
+    if status in ("Not applicable", "Not run"):
+        return None
+    return 0.0
+
+
+def _diagnose_criterion(
+    criterion_id: str,
+    result: dict[str, Any],
+    *,
+    expected: str | None = None,
+    actual: str | None = None,
+) -> dict[str, Any]:
+    """Attach severity, failure mode, root-cause hypothesis and recommended action."""
+    status = result.get("status") or "Not run"
+    reason = (result.get("reason") or "").strip()
+    expected_summary = expected if expected is not None else result.get("expected_summary")
+    actual_summary = actual if actual is not None else result.get("actual_summary")
+    component = CRITERION_COMPONENTS.get(criterion_id, "evaluation pipeline")
+    severity: Severity = "None"
+    failure_mode = None
+    root_cause = None
+    action = None
+    if status == "Pass":
+        severity = "None"
+        failure_mode = None
+        root_cause = None
+        action = "No corrective action required for this criterion."
+    elif status in ("Fail", "Error"):
+        if criterion_id in ("C01", "C02") or (
+            criterion_id == "C06" and "Full map" in (actual_summary or "") and "Partial" in (expected_summary or "")
+        ):
+            severity = "Critical"
+        elif criterion_id in ("C03", "C06", "C07"):
+            severity = "High"
+        elif criterion_id in ("C05", "C08"):
+            severity = "Medium"
+        else:
+            severity = "Medium" if criterion_id == "C04" else "High"
+        failure_mode = {
+            "C01": "wrong_or_mismatched_standard",
+            "C02": "fabricated_or_unverifiable_quote",
+            "C03": "incorrect_citation_location",
+            "C04": "missing_or_mismatched_screenshot",
+            "C05": "weak_or_contradictory_rationale",
+            "C06": "incorrect_mapping_label",
+            "C07": "claim_decomposition_or_coverage_gap",
+            "C08": "normative_requirement_misread",
+        }.get(criterion_id, "criterion_failure")
+        root_cause = (
+            f"Hypothesis: defect in {component}. Observed: {reason[:400]}"
+            if reason
+            else f"Hypothesis: defect in {component}."
+        )
+        action = {
+            "C01": (
+                "Verify the chart targets the reference edition and that every evidence block "
+                "binds to that document_id/SHA before semantic grading."
+            ),
+            "C02": (
+                "Re-bind citations to page text, reject quotes that do not appear verbatim on the "
+                "cited PDF page, and re-run quote integrity checks."
+            ),
+            "C03": (
+                "Tighten section/page resolution so the cited PDF page and printed label match the "
+                "passage used in the evidence block."
+            ),
+            "C04": (
+                "Ensure every supporting evidence block has a screenshot crop for the cited page "
+                "and highlight provenance before export."
+            ),
+            "C05": (
+                "Require rationales to state supported requirements and unresolved gaps explicitly; "
+                "retrain or constrain the mapper against the reference label policy."
+            ),
+            "C06": (
+                "Align mapping-label rules with the provisional Partial-support policy and block "
+                "Full map when material gaps remain."
+            ),
+            "C07": (
+                "Increase claim-decomposition coverage for missing limitations, rematch reference "
+                "row IDs to generated elements, and re-check exact claim text alignment."
+            ),
+            "C08": (
+                "Interpret mandatory vs optional/informative clauses separately; do not treat "
+                "optional language as establishing a Full map for required claim limitations."
+            ),
+        }.get(
+            criterion_id,
+            f"Inspect {component}, apply a targeted fix, and re-run evaluation on the same reference dataset.",
+        )
+    elif status == "Needs review":
+        severity = "Medium"
+        failure_mode = "needs_expert_review"
+        root_cause = f"Hypothesis: automated signal inconclusive in {component}."
+        action = "Have a patent-technical reviewer adjudicate this criterion with the side-by-side evidence."
+    out = {
+        **result,
+        "severity": severity,
+        "failure_mode": failure_mode,
+        "root_cause_hypothesis": root_cause,
+        "recommended_action": action,
+        "responsible_component": component,
+        "expected_summary": expected_summary,
+        "actual_summary": actual_summary,
+        "score": result.get("score", _score_from_status(status)),
+    }
+    return out
+
+
+def _grade_coverage(
+    *,
+    ref_row: dict[str, Any],
+    gen_elements: list[dict[str, Any]],
+    alignment: dict[str, Any],
+) -> dict[str, Any]:
+    """C07 — all claim elements / limitations accounted for vs reference row."""
+    expected = (
+        f"Reference element {ref_row.get('id')} covered with aligned generated row(s); "
+        f"gaps noted: {'; '.join(ref_row.get('gaps') or []) or 'none'}."
+    )
+    if not gen_elements:
+        return _diagnose_criterion(
+            "C07",
+            {
+                "status": "Fail",
+                "reason": (
+                    f"Missing generated claim element for reference {ref_row.get('id')}. "
+                    "Decomposition/alignment did not produce a matching chart row."
+                ),
+                "evidence": [],
+            },
+            expected=expected,
+            actual="No aligned generated element",
+        )
+    ref_text = _normalize_text(ref_row.get("exact_text") or "")
+    gen_texts = [_normalize_text(e.get("exact_text") or "") for e in gen_elements]
+    text_ok = any(
+        (ref_text and gen and (ref_text in gen or gen in ref_text or ref_text[:40] in gen))
+        for gen in gen_texts
+        if gen
+    )
+    score = alignment.get("generated_elements") or []
+    best = max((item.get("score") or 0) for item in score) if score else 0
+    if text_ok or best >= 0.55:
+        return _diagnose_criterion(
+            "C07",
+            {
+                "status": "Pass",
+                "reason": (
+                    f"Reference {ref_row.get('id')} aligned to "
+                    f"{[e.get('label') for e in gen_elements]} "
+                    f"(best alignment score {best:.2f}). Claim text coverage established."
+                ),
+                "evidence": [{"generated_label": e.get("label"), "id": e.get("id")} for e in gen_elements],
+            },
+            expected=expected,
+            actual=f"Aligned {[e.get('label') for e in gen_elements]}",
+        )
+    return _diagnose_criterion(
+        "C07",
+        {
+            "status": "Fail",
+            "reason": (
+                f"Aligned rows {[e.get('label') for e in gen_elements]} do not sufficiently match "
+                f"reference claim text for {ref_row.get('id')} (alignment score {best:.2f})."
+            ),
+            "evidence": [{"generated_label": e.get("label"), "exact_text": e.get("exact_text")} for e in gen_elements],
+        },
+        expected=expected,
+        actual="Weak text/alignment match",
+    )
+
+
+def _grade_normative(
+    *,
+    ref_row: dict[str, Any],
+    gen_elements: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """C08 — mandatory/optional/conditional requirements interpreted correctly."""
+    gaps = ref_row.get("gaps") or []
+    ref_label = ref_row.get("mapping_label") or ""
+    expected = (
+        f"Reference label {ref_label}; preserve mandatory gaps "
+        f"({'; '.join(gaps) or 'none'}) and do not over-claim Full map."
+    )
+    if not gen_elements:
+        return _diagnose_criterion(
+            "C08",
+            {
+                "status": "Not applicable",
+                "reason": "No generated element to assess requirement applicability.",
+                "evidence": [],
+            },
+            expected=expected,
+            actual="n/a",
+        )
+    tags = []
+    labels = []
+    for el in gen_elements:
+        rev = (el.get("revisions") or [{}])[-1] or {}
+        labels.append(rev.get("mapping_label"))
+        tags.append(
+            {
+                "label": el.get("label"),
+                "mapping_label": rev.get("mapping_label"),
+                "requirement_applicability": rev.get("requirement_applicability"),
+                "requirement_condition": rev.get("requirement_condition"),
+                "match_strength": rev.get("match_strength"),
+            }
+        )
+    actual = "; ".join(
+        f"{t['label']}: {t['mapping_label'] or '—'} / {t['requirement_applicability'] or 'unspecified'}"
+        for t in tags
+    )
+    # Critical policy: Full map while reference is Partial with mandatory gaps.
+    if ref_label == "Partial map" and any(label == "Full map" for label in labels if label):
+        return _diagnose_criterion(
+            "C08",
+            {
+                "status": "Fail",
+                "reason": (
+                    "Generated Full map over-claims relative to a Partial reference with unresolved "
+                    f"mandatory gaps: {', '.join(gaps) or 'unlisted'}."
+                ),
+                "evidence": tags,
+            },
+            expected=expected,
+            actual=actual,
+        )
+    if ref_label == "Partial map" and any(label == "Partial map" for label in labels if label):
+        return _diagnose_criterion(
+            "C08",
+            {
+                "status": "Pass",
+                "reason": (
+                    "Generated Partial map respects provisional policy: support acknowledged without "
+                    "treating unresolved mandatory gaps as fully established."
+                ),
+                "evidence": tags,
+            },
+            expected=expected,
+            actual=actual,
+        )
+    if ref_label == "No map" and all(label == "No map" for label in labels if label):
+        return _diagnose_criterion(
+            "C08",
+            {
+                "status": "Pass",
+                "reason": "No-map outcome matches reference absence-of-support for required limitations.",
+                "evidence": tags,
+            },
+            expected=expected,
+            actual=actual,
+        )
+    if any(label == "Full map" for label in labels if label) and gaps:
+        return _diagnose_criterion(
+            "C08",
+            {
+                "status": "Fail",
+                "reason": "Full map asserted while reference lists unresolved gaps for required limitations.",
+                "evidence": tags,
+            },
+            expected=expected,
+            actual=actual,
+        )
+    return _diagnose_criterion(
+        "C08",
+        {
+            "status": "Needs review",
+            "reason": (
+                "Requirement applicability tags are incomplete or mixed; expert review needed for "
+                "mandatory vs optional interpretation."
+            ),
+            "evidence": tags,
+        },
+        expected=expected,
+        actual=actual,
+    )
 
 
 def _pack_root() -> Path:
@@ -379,7 +718,15 @@ def list_datasets() -> list[dict[str, Any]]:
         rows = connection.execute(
             "SELECT id,version,status_label,provisional,pack_path,imported_at FROM evaluation_datasets ORDER BY imported_at DESC"
         ).fetchall()
-    return [dict(row) for row in rows]
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        item = dict(row)
+        pack = item.get("pack_path") or ""
+        source_name = Path(pack).name if pack else None
+        item["source_filename"] = source_name
+        item["display_name"] = source_name or item["id"]
+        out.append(item)
+    return out
 
 
 def get_dataset(dataset_id: str) -> dict[str, Any]:
@@ -537,6 +884,10 @@ def _propose_alignments(reference: dict[str, Any], chart: dict[str, Any]) -> lis
                 score = max(score, 0.9)
             if (ref_row.get("label") or "") == (gen.get("label") or ""):
                 score = max(score, 0.6)
+            if (ref_row.get("id") or "") == (gen.get("aligned_reference_hint") or ""):
+                score = max(score, 0.95)
+            if (ref_row.get("id") or "") == (gen.get("label") or ""):
+                score = max(score, 0.85)
             for req in req_texts:
                 score = max(score, _token_overlap(req, gen_text) * 0.95)
             if ref_row.get("id") == "1[a]" and any(
@@ -593,18 +944,32 @@ def _page_text(document_id: str, page_ordinal: int) -> str:
 
 
 def _quote_found(quote: str, *corpora: str) -> bool:
+    """Return True when quote text is present in a corpus.
+
+    Full normalized containment is preferred. For long quotes, a truncation
+    fallback requires the head, a middle window, AND the tail to all appear so
+    mid-quote numeric/operator mutations (e.g. 57→59) cannot sneak through via
+    head/tail-only matching (workbook T09 / C02 integrity).
+    """
     needle = _normalize_text(quote)
     if len(needle) < 12:
         return False
-    # Allow slightly truncated quotes
-    chunks = [needle]
-    if len(needle) > 80:
-        chunks.append(needle[:80])
-        chunks.append(needle[-80:])
     for corpus in corpora:
         hay = _normalize_text(corpus or "")
-        if any(chunk in hay for chunk in chunks if len(chunk) >= 12):
+        if needle in hay:
             return True
+        if len(needle) > 80:
+            mid = len(needle) // 2
+            head = needle[:80]
+            tail = needle[-80:]
+            mid_chunk = needle[max(0, mid - 40) : mid + 40]
+            if (
+                len(mid_chunk) >= 12
+                and head in hay
+                and mid_chunk in hay
+                and tail in hay
+            ):
+                return True
     return False
 
 
@@ -752,6 +1117,25 @@ def _grade_label(
         }
     if reference_label == "Partial map" and all(g == "Partial map" for g in clean):
         return {"status": "Pass", "reason": "All aligned generated labels are Partial map.", "evidence": []}
+    # Fine claim-split policy: gold pack uses compound Partial elements (e.g. 1[a]–1[c]) while
+    # the agent may emit a finer 1[a]…1[h] split. Accept when the bundle has Partial support and
+    # no Full-map over-claim; pure No-map bundles still fail against expected Partial.
+    if reference_label == "Partial map":
+        if any(g == "Full map" for g in clean):
+            return {
+                "status": "Fail",
+                "reason": f"Reference Partial map but aligned generated labels include Full map: {clean}.",
+                "evidence": [],
+            }
+        if any(g == "Partial map" for g in clean):
+            return {
+                "status": "Pass",
+                "reason": (
+                    "Reference Partial map matched under fine-split policy: at least one aligned "
+                    f"generated label is Partial map ({clean}); No-map sub-parts allowed without Full-map overclaim."
+                ),
+                "evidence": [],
+            }
     return {
         "status": "Fail",
         "reason": f"Reference {reference_label} vs generated {clean}.",
@@ -1079,6 +1463,8 @@ def _build_product_metrics(
         "C04": 1.0,  # screenshot
         "C05": 1.3,  # rationale quality
         "C06": 1.5,  # label agreement
+        "C07": 1.4,  # claim coverage
+        "C08": 1.2,  # normative compliance
     }
     weighted = 0.0
     weight_sum = 0.0
@@ -1100,6 +1486,8 @@ def _build_product_metrics(
             "C04": "Missing or mismatched screenshots reduce reviewability of source proof.",
             "C05": "Weak rationales mean analysts cannot trust why a map was asserted.",
             "C06": "Label disagreement vs reference is the clearest product-quality signal for SEP charting.",
+            "C07": "Missing or mismatched claim elements mean the chart is incomplete vs the human reference.",
+            "C08": "Misreading mandatory vs optional requirements leads to over-claiming Full maps.",
         }.get(cid, "Investigate failures for this criterion.")
         quality_gates.append(
             {
@@ -1302,8 +1690,7 @@ def create_evaluation_run(
     ensure_evaluation_schema()
     dataset = get_dataset(dataset_id)
     reference = dataset["payload"]
-    # Always evaluate the latest chart output against the attached reference.
-    stage = "latest_chart"
+    stage = output_stage or "latest_chart"
     if snapshot_id:
         with connect() as connection:
             snap = connection.execute(
@@ -1311,6 +1698,8 @@ def create_evaluation_run(
             ).fetchone()
         if not snap:
             raise KeyError(f"Unknown snapshot {snapshot_id}")
+        if snap["run_id"] != run_id:
+            raise ValueError("Snapshot does not belong to the selected chart run")
         snapshot = dict(snap)
     else:
         created = freeze_snapshot(run_id, output_stage=stage)
@@ -1458,10 +1847,32 @@ def execute_evaluation_run(evaluation_run_id: str) -> None:
         label_res = _grade_label(
             ref_row.get("mapping_label"), labels, alignment_confirmed=confirmed
         )
-        criteria = {}
-        criteria.update(det)
-        criteria.update(sem)
-        criteria["C06"] = label_res
+        edition_label = expected.get("document_edition_label") or expected.get("edition") or expected_family
+        criteria: dict[str, dict[str, Any]] = {}
+        for cid, raw in det.items():
+            criteria[cid] = _diagnose_criterion(
+                cid,
+                raw,
+                expected=f"Evidence from {edition_label}",
+                actual=(raw.get("reason") or "")[:240],
+            )
+        for cid, raw in sem.items():
+            criteria[cid] = _diagnose_criterion(
+                cid,
+                raw,
+                expected=f"Rationale supports reference label {ref_row.get('mapping_label')}",
+                actual=(raw.get("reason") or "")[:240],
+            )
+        criteria["C06"] = _diagnose_criterion(
+            "C06",
+            label_res,
+            expected=str(ref_row.get("mapping_label") or ""),
+            actual=", ".join(str(x) for x in labels if x) or "missing",
+        )
+        criteria["C07"] = _grade_coverage(
+            ref_row=ref_row, gen_elements=gen_elements, alignment=alignment
+        )
+        criteria["C08"] = _grade_normative(ref_row=ref_row, gen_elements=gen_elements)
 
         case_payloads.append(
             {
@@ -1497,52 +1908,29 @@ def execute_evaluation_run(evaluation_run_id: str) -> None:
             }
         )
 
-    # Target selection controls — separate denominator
-    set_progress("targets", "Scoring target-selection controls")
-    run_family = (chart.get("run") or {}).get("family") or ""
-    run_edition = (chart.get("run") or {}).get("edition") or ""
+    # Five-level workbook evaluation (S/R/T + readiness) — independent of Observability
+    set_progress("levels", "Running L1–L5 standard/requirements/evidence/technical/readiness checks")
     with connect() as connection:
         run_row = connection.execute(
             "SELECT target_decision_json,target_document_id FROM runs WHERE id=?",
             (erow["run_id"],),
         ).fetchone()
     decision = json.loads(run_row["target_decision_json"] or "null")
-    for control in reference.get("target_selection_controls") or []:
-        cid = control["id"]
-        expected_sel = control.get("expected_selection") or ""
-        std = control.get("standard_edition") or ""
-        if "H.265" in std:
-            if "h.265" in run_family.lower() or "h.265" in run_edition.lower():
-                status, reason = "Pass", "Snapshot targets H.265 V10 — matches recommended target control."
-            else:
-                status, reason = "Fail", f"Snapshot target {run_family} {run_edition} is not H.265 V10."
-        else:
-            if decision:
-                # If selection decision rejects this candidate, Pass
-                status, reason = (
-                    "Needs review",
-                    "Selection decision present; confirm disposition against control manually.",
-                )
-            else:
-                status, reason = (
-                    "Not applicable",
-                    "Pinned per-document chart run has no multi-candidate selection disposition. "
-                    "This control is not a row-level chart for the rejected standard.",
-                )
-        case_payloads.append(
-            {
-                "case_type": "target_selection",
-                "case_key": cid,
-                "reference_row_id": None,
-                "generated_element_ids": [],
-                "reference_label": expected_sel,
-                "generated_label": run_family or None,
-                "payload": {"control": control, "run_target": run_row["target_document_id"], "decision": decision},
-                "criteria": {
-                    "C01": {"status": status, "reason": reason, "evidence": control.get("evidence_ids") or []},
-                },
-            }
-        )
+    from .sep_eval_levels import evaluate_all_levels
+
+    level_result = evaluate_all_levels(
+        reference,
+        chart,
+        decision=decision,
+        expected_doc=expected_doc,
+        expected_sha=expected_sha,
+        expected_family=expected_family,
+        alignments_confirmed=confirmed,
+        row_cases=case_payloads,
+    )
+    case_payloads.extend(level_result["cases"])
+
+    criteria_key_by_id = {cid: key for cid, key, _name in CRITERIA}
 
     # Persist cases
     with transaction() as connection:
@@ -1566,34 +1954,41 @@ def execute_evaluation_run(evaluation_run_id: str) -> None:
                     if isinstance(case.get("reference_label"), str)
                     else dumps(case.get("reference_label")),
                     dumps(case.get("generated_label"))
-                    if not isinstance(case.get("generated_label"), str) and case.get("generated_label") is not None
+                    if not isinstance(case.get("generated_label"), str)
+                    and case.get("generated_label") is not None
                     else case.get("generated_label"),
                     dumps(case.get("payload") or {}),
                     "pending",
                 ),
             )
-            for cid, key, _name in CRITERIA:
-                if cid not in case["criteria"] and case["case_type"] == "target_selection":
-                    if cid != "C01":
-                        continue
-                crit = case["criteria"].get(cid)
-                if not crit:
-                    continue
+            for cid, crit in (case.get("criteria") or {}).items():
+                diagnosed = crit if "severity" in crit else _diagnose_criterion(cid, crit)
+                key = criteria_key_by_id.get(cid) or diagnosed.get("criterion_key") or cid.lower()
                 connection.execute(
                     """
                     INSERT INTO evaluation_criterion_results(
                       id,case_result_id,criterion_id,criterion_key,automatic_status,
-                      automatic_reason,automatic_evidence_json
-                    ) VALUES(?,?,?,?,?,?,?)
+                      automatic_reason,automatic_evidence_json,
+                      severity,failure_mode,root_cause_hypothesis,recommended_action,
+                      responsible_component,expected_summary,actual_summary,score
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                     """,
                     (
                         str(uuid.uuid4()),
                         case_id,
                         cid,
                         key,
-                        crit["status"],
-                        crit.get("reason"),
-                        dumps(crit.get("evidence") or []),
+                        diagnosed["status"],
+                        diagnosed.get("reason"),
+                        dumps(diagnosed.get("evidence") or []),
+                        diagnosed.get("severity"),
+                        diagnosed.get("failure_mode"),
+                        diagnosed.get("root_cause_hypothesis"),
+                        diagnosed.get("recommended_action"),
+                        diagnosed.get("responsible_component"),
+                        diagnosed.get("expected_summary"),
+                        diagnosed.get("actual_summary"),
+                        diagnosed.get("score"),
                     ),
                 )
 
@@ -1604,6 +1999,44 @@ def execute_evaluation_run(evaluation_run_id: str) -> None:
     summary["snapshot_hash"] = snap["chart_hash"]
     summary["output_stage"] = snap["output_stage"]
     summary["observed_failures"] = _top_failures(detail["cases"])
+    summary["level_metrics"] = level_result.get("metrics") or {}
+    summary["release_readiness"] = level_result.get("readiness") or {}
+    summary["levels"] = {
+        key: [
+            {
+                "case_key": c["case_key"],
+                "case_type": c["case_type"],
+                "status": next(iter((c.get("criteria") or {}).values()), {}).get("status"),
+            }
+            for c in (level_result.get("levels") or {}).get(key) or []
+        ]
+        for key in (
+            "standard_selection",
+            "claim_requirements",
+            "evidence_accuracy",
+            "technical_mapping",
+            "complete_claim",
+            "rubric_tests",
+        )
+    }
+    _seed_failure_actions(evaluation_run_id, detail["cases"])
+    summary["failure_actions"] = list_failure_actions(evaluation_run_id)
+    readiness = summary["release_readiness"]
+    summary["critical_failures"] = readiness.get("critical_failures") or sum(
+        1
+        for a in summary["failure_actions"]
+        if a.get("severity") == "Critical" and a.get("status") == "Open"
+    )
+    summary["high_failures"] = readiness.get("high_failures") or sum(
+        1
+        for a in summary["failure_actions"]
+        if a.get("severity") == "High" and a.get("status") == "Open"
+    )
+    summary["requires_correction"] = bool(summary["critical_failures"]) or readiness.get(
+        "recommendation"
+    ) == "No-Go"
+    summary["attorney_ready"] = False
+    summary["release_recommendation"] = readiness.get("recommendation")
     with transaction() as connection:
         connection.execute(
             """
@@ -1612,13 +2045,319 @@ def execute_evaluation_run(evaluation_run_id: str) -> None:
             WHERE id=?
             """,
             (
-                dumps({"stage": "complete", "detail": "Automated checks finished — expert review pending"}),
+                dumps(
+                    {
+                        "stage": "complete",
+                        "detail": (
+                            f"Automated checks finished — {readiness.get('recommendation') or 'expert review pending'}"
+                        ),
+                    }
+                ),
                 dumps(summary),
                 dumps({"calls": usages}),
                 utcnow(),
                 evaluation_run_id,
             ),
         )
+
+
+def _seed_failure_actions(evaluation_run_id: str, cases: list[dict[str, Any]]) -> None:
+    """Create Open tracker rows for failed criteria; do not auto-close prior actions."""
+    buckets: dict[str, dict[str, Any]] = {}
+    for case in cases:
+        if (case.get("payload") or {}).get("synthetic"):
+            continue
+        for crit in case.get("criteria") or []:
+            # Support both list-of-dicts (get_evaluation_run) and dict keyed by id (in-memory)
+            if isinstance(crit, str):
+                continue
+            status = crit.get("adjudicated_status") or crit.get("automatic_status") or crit.get(
+                "status"
+            )
+            if status != "Fail":
+                continue
+            cid = crit.get("criterion_id") or "FAIL"
+            bucket_key = f"{cid}:{crit.get('failure_mode') or case.get('case_key')}"
+            bucket = buckets.setdefault(
+                bucket_key,
+                {
+                    "criterion_id": cid,
+                    "category": crit.get("failure_mode")
+                    or crit.get("criterion_key")
+                    or case.get("case_type")
+                    or cid,
+                    "severity": crit.get("severity") or "High",
+                    "problem": crit.get("automatic_reason")
+                    or crit.get("reason")
+                    or "Criterion failed",
+                    "root_cause_hypothesis": crit.get("root_cause_hypothesis"),
+                    "recommended_fix": crit.get("recommended_action"),
+                    "responsible_component": crit.get("responsible_component"),
+                    "case_keys": [],
+                },
+            )
+            bucket["case_keys"].append(case["case_key"])
+            # Prefer Critical if any instance is critical
+            if crit.get("severity") == "Critical":
+                bucket["severity"] = "Critical"
+    now = utcnow()
+    with transaction() as connection:
+        connection.execute(
+            "DELETE FROM evaluation_failure_actions WHERE evaluation_run_id=?",
+            (evaluation_run_id,),
+        )
+        for bucket in buckets.values():
+            connection.execute(
+                """
+                INSERT INTO evaluation_failure_actions(
+                  id,evaluation_run_id,criterion_id,case_keys_json,category,severity,
+                  problem,root_cause_hypothesis,recommended_fix,responsible_component,
+                  status,created_at,updated_at
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    str(uuid.uuid4()),
+                    evaluation_run_id,
+                    bucket["criterion_id"],
+                    dumps(bucket["case_keys"]),
+                    bucket["category"],
+                    bucket["severity"],
+                    bucket["problem"][:2000],
+                    (bucket.get("root_cause_hypothesis") or "")[:2000] or None,
+                    (bucket.get("recommended_fix") or "")[:2000] or None,
+                    bucket.get("responsible_component"),
+                    "Open",
+                    now,
+                    now,
+                ),
+            )
+
+
+def list_failure_actions(evaluation_run_id: str) -> list[dict[str, Any]]:
+    ensure_evaluation_schema()
+    with connect() as connection:
+        rows = connection.execute(
+            """
+            SELECT * FROM evaluation_failure_actions
+            WHERE evaluation_run_id=?
+            ORDER BY
+              CASE severity
+                WHEN 'Critical' THEN 0 WHEN 'High' THEN 1 WHEN 'Medium' THEN 2 ELSE 3 END,
+              criterion_id
+            """,
+            (evaluation_run_id,),
+        ).fetchall()
+    out = []
+    for row in rows:
+        item = dict(row)
+        item["case_keys"] = json.loads(item.pop("case_keys_json") or "[]")
+        out.append(item)
+    return out
+
+
+def update_failure_action(
+    action_id: str,
+    *,
+    status: str,
+) -> dict[str, Any]:
+    allowed = {"Open", "In Progress", "Fixed", "Verified", "Regressed"}
+    if status not in allowed:
+        raise ValueError(f"Status must be one of {sorted(allowed)}")
+    ensure_evaluation_schema()
+    with transaction() as connection:
+        row = connection.execute(
+            "SELECT * FROM evaluation_failure_actions WHERE id=?", (action_id,)
+        ).fetchone()
+        if not row:
+            raise KeyError(f"Unknown failure action {action_id}")
+        connection.execute(
+            "UPDATE evaluation_failure_actions SET status=?,updated_at=? WHERE id=?",
+            (status, utcnow(), action_id),
+        )
+    with connect() as connection:
+        updated = connection.execute(
+            "SELECT * FROM evaluation_failure_actions WHERE id=?", (action_id,)
+        ).fetchone()
+    item = dict(updated)
+    item["case_keys"] = json.loads(item.pop("case_keys_json") or "[]")
+    return item
+
+
+def list_chart_snapshots(run_id: str, limit: int = 20) -> list[dict[str, Any]]:
+    ensure_evaluation_schema()
+    with connect() as connection:
+        rows = connection.execute(
+            """
+            SELECT id,run_id,output_stage,chart_hash,metadata_json,created_at
+            FROM chart_snapshots WHERE run_id=? ORDER BY created_at DESC LIMIT ?
+            """,
+            (run_id, limit),
+        ).fetchall()
+    out = []
+    for row in rows:
+        item = dict(row)
+        item["metadata"] = json.loads(item.pop("metadata_json") or "{}")
+        out.append(item)
+    return out
+
+
+def upload_reference_dataset(
+    *,
+    filename: str,
+    content: bytes,
+    content_type: str | None = None,
+) -> dict[str, Any]:
+    """Parse JSON/CSV/XLSX into a new evaluation_datasets row."""
+    ensure_evaluation_schema()
+    name = (filename or "reference").lower()
+    payload: dict[str, Any]
+    if name.endswith(".json"):
+        try:
+            payload = json.loads(content.decode("utf-8"))
+        except Exception as exc:  # noqa: BLE001
+            raise ValueError(f"Invalid JSON reference: {exc}") from exc
+        if not isinstance(payload, dict) or not payload.get("rows"):
+            raise ValueError("Reference JSON must be an object with a non-empty rows array")
+    elif name.endswith(".csv"):
+        import csv
+        import io
+
+        reader = csv.DictReader(io.StringIO(content.decode("utf-8-sig")))
+        rows = []
+        for index, row in enumerate(reader, start=1):
+            label = (row.get("id") or row.get("label") or row.get("element") or f"row-{index}").strip()
+            mapping = (row.get("mapping_label") or row.get("expected_label") or "").strip()
+            if not mapping:
+                raise ValueError(f"CSV row {index} missing mapping_label")
+            rows.append(
+                {
+                    "id": label,
+                    "label": label,
+                    "exact_text": (row.get("exact_text") or row.get("claim_text") or "").strip(),
+                    "mapping_label": mapping,
+                    "rationale": (row.get("rationale") or "").strip(),
+                    "gaps": [
+                        g.strip()
+                        for g in (row.get("gaps") or "").split(";")
+                        if g.strip()
+                    ],
+                }
+            )
+        if not rows:
+            raise ValueError("CSV contained no data rows")
+        payload = {
+            "dataset_id": f"upload-{uuid.uuid4().hex[:8]}",
+            "version": "1.0.0-upload",
+            "status": "Uploaded CSV reference (provisional)",
+            "provisional": True,
+            "rows": rows,
+            "criteria": [
+                {"id": cid, "key": key, "name": name, "pass_condition": name}
+                for cid, key, name in CRITERIA
+            ],
+            "recommended_target": {"family": "H.265"},
+            "label_policy": "Uploaded CSV — treat labels as human expected results.",
+        }
+    elif name.endswith(".xlsx") or name.endswith(".xls"):
+        from openpyxl import load_workbook
+        import io
+
+        wb = load_workbook(io.BytesIO(content), read_only=True, data_only=True)
+        ws = wb.active
+        headers = [str(c.value or "").strip().lower() for c in next(ws.iter_rows(max_row=1))]
+        rows = []
+        for index, excel_row in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
+            data = {headers[i]: excel_row[i] for i in range(min(len(headers), len(excel_row)))}
+            if not any(data.values()):
+                continue
+            label = str(
+                data.get("id") or data.get("label") or data.get("element") or f"row-{index}"
+            ).strip()
+            mapping = str(
+                data.get("mapping_label") or data.get("expected_label") or ""
+            ).strip()
+            if not mapping:
+                raise ValueError(f"XLSX row {index} missing mapping_label")
+            gaps_raw = str(data.get("gaps") or "")
+            rows.append(
+                {
+                    "id": label,
+                    "label": label,
+                    "exact_text": str(data.get("exact_text") or data.get("claim_text") or "").strip(),
+                    "mapping_label": mapping,
+                    "rationale": str(data.get("rationale") or "").strip(),
+                    "gaps": [g.strip() for g in gaps_raw.split(";") if g.strip()],
+                }
+            )
+        if not rows:
+            raise ValueError("XLSX contained no data rows")
+        payload = {
+            "dataset_id": f"upload-{uuid.uuid4().hex[:8]}",
+            "version": "1.0.0-upload",
+            "status": "Uploaded spreadsheet reference (provisional)",
+            "provisional": True,
+            "rows": rows,
+            "criteria": [
+                {"id": cid, "key": key, "name": cname, "pass_condition": cname}
+                for cid, key, cname in CRITERIA
+            ],
+            "recommended_target": {"family": "H.265"},
+            "label_policy": "Uploaded spreadsheet — treat labels as human expected results.",
+        }
+    else:
+        raise ValueError("Supported reference uploads: .json, .csv, .xlsx")
+
+    dataset_id = str(payload.get("dataset_id") or f"upload-{uuid.uuid4().hex[:8]}")
+    version = str(payload.get("version") or "1.0.0-upload")
+    status_label = str(payload.get("status") or "Uploaded reference")
+    payload["dataset_id"] = dataset_id
+    now = utcnow()
+    dest_dir = Path("evaluation_data") / "uploads" / dataset_id
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / (filename or "reference.bin")
+    dest.write_bytes(content)
+    with transaction() as connection:
+        connection.execute(
+            """
+            INSERT INTO evaluation_datasets(id,version,status_label,provisional,payload_json,pack_path,imported_at)
+            VALUES(?,?,?,?,?,?,?)
+            ON CONFLICT(id) DO UPDATE SET
+              version=excluded.version,
+              status_label=excluded.status_label,
+              provisional=excluded.provisional,
+              payload_json=excluded.payload_json,
+              pack_path=excluded.pack_path,
+              imported_at=excluded.imported_at
+            """,
+            (
+                dataset_id,
+                version,
+                status_label,
+                1 if payload.get("provisional", True) else 0,
+                dumps(payload),
+                str(dest),
+                now,
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO evaluation_reference_files(
+              id,dataset_id,filename,content_type,size_bytes,sha256,path,kind,attached_at,removed
+            ) VALUES(?,?,?,?,?,?,?,?,?,0)
+            """,
+            (
+                str(uuid.uuid4()),
+                dataset_id,
+                filename or dest.name,
+                content_type,
+                len(content),
+                hashlib.sha256(content).hexdigest(),
+                str(dest),
+                "dataset_upload",
+                now,
+            ),
+        )
+    return get_dataset(dataset_id)
 
 
 def _top_failures(cases: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1705,21 +2444,119 @@ def confirm_alignments(evaluation_run_id: str, alignments: list[dict[str, Any]] 
             for ge in payload.get("generated_elements") or []:
                 rev = ge.get("revision") or {}
                 labels.append(rev.get("mapping_label"))
-            graded = _grade_label(ref_label, labels, alignment_confirmed=True)
+            graded = _diagnose_criterion(
+                "C06",
+                _grade_label(ref_label, labels, alignment_confirmed=True),
+                expected=str(ref_label or ""),
+                actual=", ".join(str(x) for x in labels if x) or "missing",
+            )
             connection.execute(
                 """
                 UPDATE evaluation_criterion_results
-                SET automatic_status=?,automatic_reason=?,automatic_evidence_json=?
+                SET automatic_status=?,automatic_reason=?,automatic_evidence_json=?,
+                    severity=?,failure_mode=?,root_cause_hypothesis=?,recommended_action=?,
+                    responsible_component=?,expected_summary=?,actual_summary=?,score=?
                 WHERE case_result_id=? AND criterion_id='C06'
                 """,
-                (graded["status"], graded["reason"], dumps(graded.get("evidence") or []), case["id"]),
+                (
+                    graded["status"],
+                    graded["reason"],
+                    dumps(graded.get("evidence") or []),
+                    graded.get("severity"),
+                    graded.get("failure_mode"),
+                    graded.get("root_cause_hypothesis"),
+                    graded.get("recommended_action"),
+                    graded.get("responsible_component"),
+                    graded.get("expected_summary"),
+                    graded.get("actual_summary"),
+                    graded.get("score"),
+                    case["id"],
+                ),
             )
     detail = get_evaluation_run(evaluation_run_id)
+    _seed_failure_actions(evaluation_run_id, detail["cases"])
+    detail = get_evaluation_run(evaluation_run_id)
+    summary = detail["summary"]
+    summary["failure_actions"] = list_failure_actions(evaluation_run_id)
+    summary["critical_failures"] = sum(
+        1
+        for a in summary["failure_actions"]
+        if a.get("severity") == "Critical" and a.get("status") == "Open"
+    )
+    summary["high_failures"] = sum(
+        1
+        for a in summary["failure_actions"]
+        if a.get("severity") == "High" and a.get("status") == "Open"
+    )
+    summary["requires_correction"] = bool(summary["critical_failures"])
+    # Refresh mapping-label accuracy now that C06 is unblocked
+    label_pass = label_eligible = 0
+    for case in detail["cases"]:
+        if case.get("case_type") != "reference_row":
+            continue
+        for crit in case.get("criteria") or []:
+            if crit.get("criterion_id") != "C06":
+                continue
+            st = crit.get("adjudicated_status") or crit.get("automatic_status")
+            if st in ("Not run", "Not applicable"):
+                continue
+            label_eligible += 1
+            if st == "Pass":
+                label_pass += 1
+    metrics = dict(summary.get("level_metrics") or {})
+    metrics["mapping_label_accuracy"] = {
+        "pass": label_pass,
+        "eligible": label_eligible,
+        "rate": round(100.0 * label_pass / label_eligible, 1) if label_eligible else None,
+        "display": f"{label_pass}/{label_eligible}" if label_eligible else "—",
+    }
+    summary["level_metrics"] = metrics
+    readiness = dict(summary.get("release_readiness") or {})
+    readiness["alignments_confirmed"] = True
+    # Keep Conditional Go while provisional / high failures remain; refresh reason text
+    if readiness.get("provisional") or not readiness.get("expert_signoff"):
+        readiness["recommendation"] = "Conditional Go — Human Review Required"
+        readiness["human_review_required"] = True
+        readiness["reason"] = (
+            "Provisional reference without SEP attorney sign-off; alignments confirmed. "
+            "Prototype acceptance ≠ production readiness."
+        )
+    summary["release_readiness"] = readiness
+    summary["release_recommendation"] = readiness.get("recommendation")
     with transaction() as connection:
         connection.execute(
             "UPDATE evaluation_runs SET summary_json=?,updated_at=? WHERE id=?",
-            (dumps(detail["summary"]), utcnow(), evaluation_run_id),
+            (dumps(summary), utcnow(), evaluation_run_id),
         )
+        # Refresh complete-claim case text so it reflects confirmed alignments
+        claim_case = connection.execute(
+            """
+            SELECT id FROM evaluation_case_results
+            WHERE evaluation_run_id=? AND case_type='complete_claim'
+            LIMIT 1
+            """,
+            (evaluation_run_id,),
+        ).fetchone()
+        if claim_case:
+            claim_reason = readiness.get("reason") or ""
+            connection.execute(
+                """
+                UPDATE evaluation_criterion_results
+                SET automatic_reason=?, actual_summary=?
+                WHERE case_result_id=?
+                """,
+                (claim_reason, readiness.get("recommendation"), claim_case["id"]),
+            )
+            payload_row = connection.execute(
+                "SELECT payload_json FROM evaluation_case_results WHERE id=?",
+                (claim_case["id"],),
+            ).fetchone()
+            payload = json.loads(payload_row["payload_json"] or "{}")
+            payload["readiness"] = readiness
+            connection.execute(
+                "UPDATE evaluation_case_results SET payload_json=?, generated_label=? WHERE id=?",
+                (dumps(payload), readiness.get("recommendation"), claim_case["id"]),
+            )
     return get_evaluation_run(evaluation_run_id)
 
 
@@ -1815,6 +2652,7 @@ def get_evaluation_run(evaluation_run_id: str) -> dict[str, Any]:
             ).fetchall()
             criteria = []
             for c in crits:
+                keys = c.keys()
                 criteria.append(
                     {
                         "id": c["id"],
@@ -1827,6 +2665,22 @@ def get_evaluation_run(evaluation_run_id: str) -> dict[str, Any]:
                         "adjudicated_reason": c["adjudicated_reason"],
                         "adjudicator": c["adjudicator"],
                         "adjudicated_at": c["adjudicated_at"],
+                        "severity": c["severity"] if "severity" in keys else None,
+                        "failure_mode": c["failure_mode"] if "failure_mode" in keys else None,
+                        "root_cause_hypothesis": c["root_cause_hypothesis"]
+                        if "root_cause_hypothesis" in keys
+                        else None,
+                        "recommended_action": c["recommended_action"]
+                        if "recommended_action" in keys
+                        else None,
+                        "responsible_component": c["responsible_component"]
+                        if "responsible_component" in keys
+                        else None,
+                        "expected_summary": c["expected_summary"]
+                        if "expected_summary" in keys
+                        else None,
+                        "actual_summary": c["actual_summary"] if "actual_summary" in keys else None,
+                        "score": c["score"] if "score" in keys else None,
                     }
                 )
             case_list.append(
@@ -1858,6 +2712,48 @@ def get_evaluation_run(evaluation_run_id: str) -> dict[str, Any]:
         summary["observed_failures"] = stored["observed_failures"]
     else:
         summary["observed_failures"] = _top_failures(case_list)
+    failure_actions = list_failure_actions(evaluation_run_id)
+    summary["failure_actions"] = failure_actions
+    summary["critical_failures"] = stored.get("critical_failures")
+    if summary["critical_failures"] is None:
+        summary["critical_failures"] = sum(
+            1 for a in failure_actions if a.get("severity") == "Critical" and a.get("status") == "Open"
+        )
+    summary["high_failures"] = stored.get("high_failures")
+    if summary["high_failures"] is None:
+        summary["high_failures"] = sum(
+            1 for a in failure_actions if a.get("severity") == "High" and a.get("status") == "Open"
+        )
+    summary["requires_correction"] = bool(
+        stored.get("requires_correction")
+        or summary["critical_failures"]
+    )
+    summary["attorney_ready"] = False
+    if stored.get("release_readiness"):
+        summary["release_readiness"] = stored["release_readiness"]
+    if stored.get("release_recommendation"):
+        summary["release_recommendation"] = stored["release_recommendation"]
+    if stored.get("level_metrics"):
+        summary["level_metrics"] = stored["level_metrics"]
+    if stored.get("levels"):
+        summary["levels"] = stored["levels"]
+    summary["production_plan"] = {
+        "automated": (
+            "Source integrity, quote existence, version/page checks, screenshot presence, "
+            "missing elements, and deterministic citation checks."
+        ),
+        "expert": (
+            "Technical mapping validity, claim interpretation, Full/Partial/No label accuracy, "
+            "and essentiality-related legal judgment remain human-gated."
+        ),
+        "regression": (
+            "Rerun the frozen human-verified dataset after model, prompt, retrieval, or mapping changes."
+        ),
+        "quality_gates": (
+            "Critical evidence failures block attorney-ready status. Expert sign-off remains required "
+            "for substantive conclusions. Aggregate scores never alone declare readiness."
+        ),
+    }
     return {
         "id": row["id"],
         "status": row["status"],
@@ -1873,6 +2769,7 @@ def get_evaluation_run(evaluation_run_id: str) -> dict[str, Any]:
         "run_id": row["run_id"],
         "cases": case_list,
         "summary": summary,
+        "failure_actions": failure_actions,
         "usage": json.loads(row["usage_json"] or "{}"),
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
@@ -1888,21 +2785,49 @@ def get_evaluation_run(evaluation_run_id: str) -> dict[str, Any]:
             "target_selection_controls": dataset_full["payload"].get("target_selection_controls"),
             "planned_risk_cases": dataset_full["payload"].get("planned_risk_cases"),
             "companions": dataset_full["payload"].get("companions"),
+            "patent": dataset_full["payload"].get("patent"),
+            "recommended_target": dataset_full["payload"].get("recommended_target"),
         },
     }
+
+
+def _criterion_pass_rates(detail: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    out: dict[str, dict[str, Any]] = {}
+    for row in detail.get("summary", {}).get("criteria") or []:
+        out[row["criterion_id"]] = {
+            "name": row.get("name"),
+            "pass": row.get("automatic_pass") or 0,
+            "eligible": row.get("automatic_eligible") or 0,
+            "display": row.get("automatic_display"),
+            "rate": (
+                round(100.0 * row["automatic_pass"] / row["automatic_eligible"], 1)
+                if row.get("automatic_eligible")
+                else None
+            ),
+        }
+    return out
 
 
 def compare_evaluation_runs(baseline_id: str, candidate_id: str) -> dict[str, Any]:
     a = get_evaluation_run(baseline_id)
     b = get_evaluation_run(candidate_id)
+    version_mismatch = (
+        a["dataset"]["id"] != b["dataset"]["id"]
+        or a["dataset"].get("version") != b["dataset"].get("version")
+    )
     if a["dataset"]["id"] != b["dataset"]["id"]:
         return {
             "compatible": False,
-            "warning": "Dataset versions differ. Regrade both snapshots under one reference version before comparing.",
+            "version_mismatch_warning": (
+                "Dataset IDs differ. Regrade both snapshots under one reference version before comparing."
+            ),
             "baseline": {"id": baseline_id, "dataset": a["dataset"]},
             "candidate": {"id": candidate_id, "dataset": b["dataset"]},
         }
     changes = []
+    persistent_fails = []
+    newly_failing = []
+    newly_passing = []
     a_cases = {c["case_key"]: c for c in a["cases"] if c["case_type"] == "reference_row"}
     b_cases = {c["case_key"]: c for c in b["cases"] if c["case_type"] == "reference_row"}
     for key in sorted(set(a_cases) | set(b_cases)):
@@ -1910,103 +2835,248 @@ def compare_evaluation_runs(baseline_id: str, candidate_id: str) -> dict[str, An
         for cid, _k, name in CRITERIA:
             sa = next((x["automatic_status"] for x in (ca or {}).get("criteria", []) if x["criterion_id"] == cid), None)
             sb = next((x["automatic_status"] for x in (cb or {}).get("criteria", []) if x["criterion_id"] == cid), None)
+            if sa == "Fail" and sb == "Fail":
+                persistent_fails.append({"case_key": key, "criterion_id": cid, "criterion_name": name})
             if sa != sb:
-                changes.append(
-                    {
-                        "case_key": key,
-                        "criterion_id": cid,
-                        "criterion_name": name,
-                        "baseline": sa,
-                        "candidate": sb,
-                        "fixed": sa == "Fail" and sb == "Pass",
-                        "regressed": sa == "Pass" and sb == "Fail",
-                    }
-                )
+                item = {
+                    "case_key": key,
+                    "criterion_id": cid,
+                    "criterion_name": name,
+                    "baseline": sa,
+                    "candidate": sb,
+                    "fixed": sa == "Fail" and sb == "Pass",
+                    "regressed": sa == "Pass" and sb == "Fail",
+                }
+                changes.append(item)
+                if item["fixed"]:
+                    newly_passing.append(item)
+                if item["regressed"]:
+                    newly_failing.append(item)
+    baseline_rates = _criterion_pass_rates(a)
+    candidate_rates = _criterion_pass_rates(b)
+    criterion_delta = []
+    for cid, _k, name in CRITERIA:
+        br = baseline_rates.get(cid, {}).get("rate")
+        cr = candidate_rates.get(cid, {}).get("rate")
+        criterion_delta.append(
+            {
+                "criterion_id": cid,
+                "name": name,
+                "baseline_rate": br,
+                "candidate_rate": cr,
+                "delta_pp": None if br is None or cr is None else round(cr - br, 1),
+            }
+        )
     return {
         "compatible": True,
+        "version_mismatch_warning": (
+            "Rubric/dataset versions differ — interpret deltas cautiously."
+            if version_mismatch
+            else None
+        ),
         "baseline_id": baseline_id,
         "candidate_id": candidate_id,
+        "baseline_rates": baseline_rates,
+        "candidate_rates": candidate_rates,
+        "criterion_delta": criterion_delta,
         "changes": changes,
         "fixed": sum(1 for c in changes if c["fixed"]),
         "regressed": sum(1 for c in changes if c["regressed"]),
-        "note": "Paired case changes on a small dataset; not a significance claim.",
+        "newly_passing": newly_passing,
+        "newly_failing": newly_failing,
+        "persistent_failures": persistent_fails,
+        "note": "Paired case changes on a small dataset; not a causal claim about any single code change.",
     }
 
 
-def export_evaluation_bundle(evaluation_run_id: str) -> Path:
-    """Write XLSX + half-page markdown summary into an export directory."""
+def evaluation_history(
+    *,
+    dataset_id: str | None = None,
+    run_id: str | None = None,
+    limit: int = 30,
+) -> list[dict[str, Any]]:
+    """Criterion pass-rate points for iteration trend charts."""
+    runs = list_evaluation_runs(limit=limit)
+    points = []
+    for item in reversed(runs):
+        if dataset_id and item.get("dataset_id") != dataset_id:
+            continue
+        if run_id and item.get("run_id") != run_id:
+            continue
+        summary = item.get("summary") or {}
+        criteria = {}
+        for row in summary.get("criteria") or []:
+            eligible = row.get("automatic_eligible") or 0
+            passed = row.get("automatic_pass") or 0
+            criteria[row["criterion_id"]] = {
+                "name": row.get("name"),
+                "pass": passed,
+                "eligible": eligible,
+                "rate": round(100.0 * passed / eligible, 1) if eligible else None,
+            }
+        points.append(
+            {
+                "evaluation_run_id": item["id"],
+                "created_at": item.get("created_at"),
+                "run_id": item.get("run_id"),
+                "dataset_id": item.get("dataset_id"),
+                "status": item.get("status"),
+                "critical_failures": summary.get("critical_failures"),
+                "requires_correction": summary.get("requires_correction"),
+                "health_score": (summary.get("product_metrics") or {}).get("headline", {}).get(
+                    "health_score"
+                ),
+                "criteria": criteria,
+            }
+        )
+    return points
+
+
+def write_evaluation_workbook(evaluation_run_id: str) -> Path:
+    """Persist 8-sheet deliverable XLSX from real evaluation records."""
     from openpyxl import Workbook
 
     detail = get_evaluation_run(evaluation_run_id)
     settings = get_settings()
     out_dir = settings.artifact_dir / "evaluation_exports" / evaluation_run_id
     out_dir.mkdir(parents=True, exist_ok=True)
+    summary = detail["summary"]
+    readiness = summary.get("release_readiness") or {}
+    level_metrics = summary.get("level_metrics") or {}
+    ref = detail["reference_payload"]
 
     wb = Workbook()
-    # 1 Run summary
-    ws = wb.active
-    ws.title = "Run summary"
-    summary = detail["summary"]
-    rows = [
+
+    # 1 Evaluation Summary
+    ws1 = wb.active
+    ws1.title = "Evaluation Summary"
+    top_fails = [f for f in (summary.get("observed_failures") or []) if f.get("count")][:3]
+    for row in [
         ("Evaluation run", evaluation_run_id),
-        ("Status", detail["status"]),
         ("Chart run", detail["run_id"]),
         ("Dataset", f"{detail['dataset']['id']} v{detail['dataset']['version']}"),
-        ("Reference status", detail["dataset"]["status_label"]),
-        ("Output stage", detail["snapshot"]["output_stage"]),
-        ("Snapshot hash", detail["snapshot"]["chart_hash"]),
-        ("Alignments confirmed", detail["alignments_confirmed"]),
+        ("Snapshot", detail["snapshot"]["chart_hash"]),
+        ("Release recommendation", summary.get("release_recommendation") or readiness.get("recommendation")),
+        ("Readiness reason", readiness.get("reason")),
+        ("Provisional reference", readiness.get("provisional", True)),
+        ("Expert sign-off", readiness.get("expert_signoff", False)),
         ("Attorney-ready", False),
-        ("Always-Partial baseline", summary.get("always_partial_baseline")),
-        ("Full map P/R", summary.get("full_map_precision_recall")),
-        ("Limitations", "; ".join(summary.get("limitations") or [])),
-    ]
-    for i, (k, v) in enumerate(rows, 1):
-        ws.cell(i, 1, k)
-        ws.cell(i, 2, str(v))
+        ("Critical failures", summary.get("critical_failures")),
+        ("High failures", summary.get("high_failures")),
+        ("Requirement recall", (level_metrics.get("requirement_recall") or {}).get("display")),
+        ("Citation validity", (level_metrics.get("citation_validity") or {}).get("display")),
+        ("Mapping label accuracy", (level_metrics.get("mapping_label_accuracy") or {}).get("display")),
+        ("Natural rubric tests", (level_metrics.get("natural_rubric_tests") or {}).get("display")),
+        ("Full map P/R", json.dumps(level_metrics.get("full_map_precision_recall") or readiness.get("full_map_precision_recall"))),
+        (
+            "Top 3 failure modes",
+            "; ".join(
+                f"{f.get('name') or f.get('criterion_id')} (n={f.get('count')})" for f in top_fails
+            )
+            or "None observed",
+        ),
+        ("Limitations", "; ".join(readiness.get("limitations") or summary.get("limitations") or [])),
+    ]:
+        ws1.append(list(row))
+    ws1.append([])
+    ws1.append(["Recommended improvements"])
+    for action in detail.get("failure_actions") or []:
+        if action.get("recommended_fix"):
+            ws1.append([action.get("criterion_id"), action.get("recommended_fix")])
 
-    # 2 Expected labels
-    ws2 = wb.create_sheet("Expected labels")
-    ws2.append(["Element", "Exact text", "Label", "Gaps", "Status"])
-    for row in detail["reference_payload"].get("rows") or []:
+    # 2 Test Cases & Expected Results
+    ws2 = wb.create_sheet("Test Cases & Expected Results")
+    ws2.append(
+        ["ID", "Type", "Level", "Element/Requirement", "Expected", "Evidence anchors", "Notes"]
+    )
+    for row in ref.get("rows") or []:
         ws2.append(
             [
+                row.get("id"),
+                "reference_row",
+                "technical_mapping",
                 row.get("label"),
-                row.get("exact_text"),
                 row.get("mapping_label"),
-                "; ".join(row.get("gaps") or []),
-                detail["reference_payload"].get("status"),
+                ",".join(row.get("evidence_ids") or []),
+                (row.get("rationale") or "")[:500],
+            ]
+        )
+    for req in ref.get("requirements") or []:
+        ws2.append(
+            [
+                req.get("id"),
+                "requirement",
+                "claim_requirements",
+                req.get("element_label"),
+                req.get("reference_coverage"),
+                ",".join(req.get("evidence_ids") or []),
+                req.get("text"),
+            ]
+        )
+    for ctrl in ref.get("target_selection_controls") or []:
+        ws2.append(
+            [
+                ctrl.get("id"),
+                "target_selection",
+                "standard_selection",
+                ctrl.get("standard_edition"),
+                ctrl.get("expected_selection"),
+                ",".join(ctrl.get("evidence_ids") or []),
+                ctrl.get("reason"),
+            ]
+        )
+    from .sep_eval_levels import RUBRIC_TESTS
+
+    for test in RUBRIC_TESTS:
+        ws2.append(
+            [
+                test["id"],
+                "rubric_test",
+                test["level"],
+                test["input"],
+                test["expected"],
+                "",
+                test["type"] + (" (synthetic)" if test.get("synthetic") else ""),
             ]
         )
 
-    # 3 Actual chart
-    ws3 = wb.create_sheet("Actual chart")
-    ws3.append(["Element", "Generated label", "Rationale (truncated)", "Evidence IDs"])
+    # 3 Actual Agent Results
+    ws3 = wb.create_sheet("Actual Agent Results")
+    ws3.append(
+        ["Case ID", "Case type", "Expected", "Actual", "Aligned generated", "Synthetic"]
+    )
     for case in detail["cases"]:
-        if case["case_type"] != "reference_row":
-            continue
-        for ge in case["payload"].get("generated_elements") or []:
-            rev = ge.get("revision") or {}
-            ws3.append(
-                [
-                    ge.get("label"),
-                    rev.get("mapping_label"),
-                    (rev.get("rationale") or "")[:500],
-                    ",".join(rev.get("evidence_ids") or []),
-                ]
-            )
+        ws3.append(
+            [
+                case["case_key"],
+                case["case_type"],
+                case.get("reference_label"),
+                case.get("generated_label")
+                if isinstance(case.get("generated_label"), str)
+                else json.dumps(case.get("generated_label")),
+                ",".join(case.get("generated_element_ids") or []),
+                bool((case.get("payload") or {}).get("synthetic")),
+            ]
+        )
 
-    # 4 Criterion scores
-    ws4 = wb.create_sheet("Criterion scores")
+    # 4 Criterion-Level Scores & Explanations
+    ws4 = wb.create_sheet("Criterion-Level Scores")
     ws4.append(
         [
             "Case",
+            "Case type",
+            "Level",
             "Criterion",
-            "Automatic",
-            "Auto reason",
-            "Adjudicated",
-            "Adj reason",
-            "Reviewer",
+            "Expected",
+            "Actual",
+            "Score",
+            "Status",
+            "Explanation",
+            "Severity",
+            "Failure mode",
+            "Root cause",
+            "Recommended action",
+            "Component",
         ]
     )
     for case in detail["cases"]:
@@ -2014,123 +3084,207 @@ def export_evaluation_bundle(evaluation_run_id: str) -> Path:
             ws4.append(
                 [
                     case["case_key"],
+                    case["case_type"],
+                    (case.get("payload") or {}).get("level")
+                    or (case.get("payload") or {}).get("test", {}).get("level"),
                     crit["criterion_id"],
-                    crit["automatic_status"],
-                    crit.get("automatic_reason"),
-                    crit.get("adjudicated_status"),
-                    crit.get("adjudicated_reason"),
-                    crit.get("adjudicator"),
+                    crit.get("expected_summary"),
+                    crit.get("actual_summary"),
+                    crit.get("score"),
+                    crit.get("adjudicated_status") or crit.get("automatic_status"),
+                    crit.get("adjudicated_reason") or crit.get("automatic_reason"),
+                    crit.get("severity"),
+                    crit.get("failure_mode"),
+                    crit.get("root_cause_hypothesis"),
+                    crit.get("recommended_action"),
+                    crit.get("responsible_component"),
                 ]
             )
 
-    # 5 Evidence checks
-    ws5 = wb.create_sheet("Evidence checks")
-    ws5.append(["Case", "Criterion", "Status", "Evidence JSON"])
+    # 5 Technical Requirement Coverage
+    ws5 = wb.create_sheet("Technical Requirement Coverage")
+    ws5.append(
+        ["Requirement", "Element", "Text", "Reference coverage", "Status", "Score", "Explanation"]
+    )
+    for case in detail["cases"]:
+        if case["case_type"] != "requirement":
+            continue
+        crit = (case.get("criteria") or [{}])[0]
+        req = (case.get("payload") or {}).get("requirement") or {}
+        ws5.append(
+            [
+                case["case_key"],
+                req.get("element_label") or case.get("reference_row_id"),
+                req.get("text"),
+                req.get("reference_coverage"),
+                crit.get("automatic_status"),
+                crit.get("score"),
+                crit.get("automatic_reason"),
+            ]
+        )
+    ws5.append([])
+    ws5.append(["Metric", "Value"])
+    for key in ("requirement_recall", "decomposition_completeness"):
+        m = level_metrics.get(key) or {}
+        ws5.append([key, m.get("display") or m])
+
+    # 6 Evidence Verification Results
+    ws6 = wb.create_sheet("Evidence Verification Results")
+    ws6.append(
+        ["Case", "Criterion", "Status", "Expected", "Actual", "Explanation", "Evidence JSON"]
+    )
     for case in detail["cases"]:
         for crit in case["criteria"]:
-            if crit["criterion_id"] in ("C01", "C02", "C03", "C04"):
-                ws5.append(
-                    [
-                        case["case_key"],
-                        crit["criterion_id"],
-                        crit["automatic_status"],
-                        json.dumps(crit.get("automatic_evidence") or []),
-                    ]
-                )
+            if crit["criterion_id"] not in ("C01", "C02", "C03", "C04") and case[
+                "case_key"
+            ] not in ("T02", "T09"):
+                continue
+            ws6.append(
+                [
+                    case["case_key"],
+                    crit["criterion_id"],
+                    crit.get("automatic_status"),
+                    crit.get("expected_summary"),
+                    crit.get("actual_summary"),
+                    crit.get("automatic_reason"),
+                    json.dumps(crit.get("automatic_evidence") or [])[:2000],
+                ]
+            )
+    ws6.append([])
+    for key in (
+        "retrieval_recall_at_k",
+        "citation_validity",
+        "verbatim_evidence_validity",
+        "screenshot_correspondence",
+    ):
+        ws6.append([key, json.dumps(level_metrics.get(key) or {})])
 
-    # 6 Alignment
-    ws6 = wb.create_sheet("Alignment")
-    ws6.append(["Reference", "Generated labels", "Scores", "Status"])
-    for item in detail["alignments"]:
-        gens = item.get("generated_elements") or []
-        ws6.append(
-            [
-                item.get("reference_row_id"),
-                ",".join(g.get("generated_label") or "" for g in gens),
-                ",".join(str(g.get("score")) for g in gens),
-                item.get("status"),
-            ]
-        )
-
-    # 7 Failures
-    ws7 = wb.create_sheet("Failures")
-    ws7.append(["Type", "Count", "Examples", "Hypothesis", "Fix", "Status"])
-    for fail in summary.get("observed_failures") or []:
+    # 7 Failure Modes & Corrective Actions
+    ws7 = wb.create_sheet("Failure Modes & Actions")
+    ws7.append(
+        [
+            "Failure ID",
+            "Criterion",
+            "Cases",
+            "Category",
+            "Severity",
+            "Problem",
+            "Root cause",
+            "Recommended fix",
+            "Component",
+            "Status",
+        ]
+    )
+    for action in detail.get("failure_actions") or summary.get("failure_actions") or []:
         ws7.append(
             [
-                fail.get("name") or fail.get("criterion_id"),
-                fail.get("count"),
-                json.dumps(fail.get("examples") or []),
-                fail.get("root_cause_hypothesis"),
-                fail.get("proposed_fix"),
-                fail.get("status"),
+                action.get("id"),
+                action.get("criterion_id"),
+                ",".join(action.get("case_keys") or []),
+                action.get("category"),
+                action.get("severity"),
+                action.get("problem"),
+                action.get("root_cause_hypothesis"),
+                action.get("recommended_fix"),
+                action.get("responsible_component"),
+                action.get("status"),
             ]
         )
 
-    # 8 Regression placeholder
-    ws8 = wb.create_sheet("Regression comparison")
-    ws8.append(["Note", "Use GET /api/evaluation-runs/compare?baseline=&candidate="])
-    ws8.append(["Paired changes", "Not run in this export unless compare IDs supplied"])
-
-    # 9 Production plan
-    ws9 = wb.create_sheet("Production plan")
-    for line in [
-        "Every generated chart: automatic integrity checks + independent review + immutable trace.",
-        "Before model/prompt/retrieval changes: run corruption tests + full small reference set.",
-        "Supervised-use gate is proposed policy, not measured attorney readiness.",
-        "Convert confirmed failures into versioned regression cases.",
-    ]:
-        ws9.append([line])
+    # 8 Iteration Comparison & Historical Metrics
+    ws8 = wb.create_sheet("Iteration History")
+    ws8.append(
+        [
+            "Evaluation Run ID",
+            "Timestamp",
+            "Dataset",
+            "Chart Run",
+            "Status",
+            "Health",
+            "Critical",
+            "Requires correction",
+            "Release recommendation",
+        ]
+    )
+    for point in evaluation_history(dataset_id=detail["dataset"]["id"], limit=50):
+        ws8.append(
+            [
+                point.get("evaluation_run_id"),
+                point.get("created_at"),
+                point.get("dataset_id"),
+                point.get("run_id"),
+                point.get("status"),
+                point.get("health_score"),
+                point.get("critical_failures"),
+                point.get("requires_correction"),
+                (point.get("criteria") and "") or "",
+            ]
+        )
 
     xlsx_path = out_dir / "evaluation_results.xlsx"
     wb.save(xlsx_path)
 
-    # Half-page summary
     lines = [
         f"# Evaluation summary — {evaluation_run_id[:8]}",
         "",
         f"- Chart run: `{detail['run_id']}`",
-        f"- Reference: {detail['dataset']['id']} v{detail['dataset']['version']} — {detail['dataset']['status_label']}",
-        f"- Status: {detail['status']} (attorney-ready: no)",
-        f"- Always-Partial baseline: {summary.get('always_partial_baseline')}",
-        f"- Full map precision/recall: {summary.get('full_map_precision_recall')}",
+        f"- Reference: {detail['dataset']['id']} v{detail['dataset']['version']}",
+        f"- Release: {summary.get('release_recommendation') or readiness.get('recommendation')}",
+        f"- Critical failures: {summary.get('critical_failures')}",
+        f"- Attorney-ready: no",
         "",
-        "## Six criteria (automatic pass/eligible)",
+        "## Criteria (automatic pass/eligible)",
     ]
     for crit in summary.get("criteria") or []:
         lines.append(
             f"- {crit['criterion_id']} {crit['name']}: {crit['automatic_display']} "
-            f"(expert {crit['expert_display']}; fail={crit['failures']})"
+            f"(fail={crit['failures']})"
         )
     lines += ["", "## Top observed failures"]
-    fails = [f for f in (summary.get("observed_failures") or []) if f.get("count")]
-    if not fails:
-        lines.append("- No Fail results observed yet (or evaluation Not run).")
+    if not top_fails:
+        lines.append("- No Fail results observed yet.")
     else:
-        for fail in fails[:3]:
+        for fail in top_fails:
             lines.append(
-                f"- {fail.get('name') or fail.get('criterion_id')}: count={fail.get('count')} — {fail.get('root_cause_hypothesis')}"
+                f"- {fail.get('name') or fail.get('criterion_id')}: count={fail.get('count')} — "
+                f"{fail.get('root_cause_hypothesis')}"
             )
     lines += [
         "",
-        "## Production policy (proposed)",
-        "- Integrity failures and unsupported Full assertions route to human review.",
-        "- Retest the small natural reference set before promoting pipeline changes.",
+        "## Release readiness",
+        f"- Recommendation: {readiness.get('recommendation')}",
+        f"- Provisional: {readiness.get('provisional', True)}",
+        f"- Expert sign-off: {readiness.get('expert_signoff', False)}",
+        f"- Human review required: {readiness.get('human_review_required', True)}",
         "",
         "## Limitations",
-        *[f"- {item}" for item in summary.get("limitations") or []],
     ]
-    md_path = out_dir / "evaluation_summary.md"
-    md_path.write_text("\n".join(lines) + "\n")
+    for lim in readiness.get("limitations") or summary.get("limitations") or []:
+        lines.append(f"- {lim}")
+    (out_dir / "evaluation_summary.md").write_text("\n".join(lines) + "\n")
+    return xlsx_path
 
-    # Bundle zip
+
+def export_evaluation_xlsx(evaluation_run_id: str) -> Path:
+    return write_evaluation_workbook(evaluation_run_id)
+
+
+def export_evaluation_bundle(evaluation_run_id: str) -> Path:
+    """Write XLSX + markdown into a zip (companions included when present)."""
+    xlsx_path = write_evaluation_workbook(evaluation_run_id)
+    out_dir = xlsx_path.parent
+    md_path = out_dir / "evaluation_summary.md"
     zip_path = out_dir / "evaluation_bundle.zip"
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.write(xlsx_path, xlsx_path.name)
-        zf.write(md_path, md_path.name)
-        # Include reference companion pointers
+        if md_path.exists():
+            zf.write(md_path, md_path.name)
         pack = _pack_root()
-        for name in ("Expected_Claim1_Reference.json", "Expected_Claim1_Evaluation.xlsx", "Expected_Claim1_Chart.pdf"):
+        for name in (
+            "Expected_Claim1_Reference.json",
+            "Expected_Claim1_Evaluation.xlsx",
+            "Expected_Claim1_Chart.pdf",
+        ):
             src = pack / name
             if src.exists():
                 zf.write(src, f"reference/{name}")

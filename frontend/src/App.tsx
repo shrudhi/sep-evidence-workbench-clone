@@ -1,9 +1,9 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Check,
+  Activity,
   ClipboardCheck,
   FileSpreadsheet,
-  LayoutDashboard,
   Layers3,
   PanelLeftClose,
   PanelLeftOpen,
@@ -12,13 +12,21 @@ import {
   X
 } from "lucide-react";
 import { api } from "./api";
+import WorkflowStepper from "./components/WorkflowStepper";
 import SetupScreen from "./screens/SetupScreen";
 import ClaimChartsScreen from "./screens/ClaimChartsScreen";
-import ConclusionScreen from "./screens/ConclusionScreen";
+import SepReportScreen from "./screens/SepReportScreen";
 import EvaluationsScreen from "./screens/EvaluationsScreen";
-import DashboardScreen from "./screens/DashboardScreen";
+import EvaluationQualityScreen from "./screens/EvaluationQualityScreen";
+import ObservabilityScreen from "./screens/ObservabilityScreen";
 import SettingsScreen from "./screens/SettingsScreen";
 import type { Chart, Health, RunSummary, Screen, SetupBundle } from "./types";
+import {
+  computeWorkflowGates,
+  isWorkflowScreen,
+  toWorkflowStep,
+  type WorkflowStepId
+} from "./workflow";
 
 const PROJECT_ID = "lumenci-assessment";
 
@@ -37,15 +45,19 @@ export default function App() {
   const [screen, setScreen] = useState<Screen>(
     initialLink.view === "review" || initialLink.view === "charts"
       ? "charts"
-      : initialLink.view === "conclusion"
-        ? "conclusion"
+      : initialLink.view === "sep_report" || initialLink.view === "conclusion"
+        ? "sep_report"
         : initialLink.view === "setup"
           ? "setup"
           : initialLink.view === "evaluations"
             ? "evaluations"
-            : initialLink.view === "settings"
-              ? "settings"
-              : "setup"
+            : initialLink.view === "evaluations_legacy"
+              ? "evaluations_legacy"
+              : initialLink.view === "observability"
+                ? "observability"
+                : initialLink.view === "settings"
+                  ? "settings"
+                  : "setup"
   );
   const [setup, setSetup] = useState<SetupBundle | null>(null);
   const [health, setHealth] = useState<Health | null>(null);
@@ -250,9 +262,44 @@ export default function App() {
     setChart(await api<Chart>(`/api/runs/${activeRunId}/chart`));
   };
 
-  const exportDoc = (final: boolean) => {
+  const exportDoc = async (final: boolean) => {
     if (!activeRunId) return;
-    window.open(`/api/runs/${activeRunId}/export?final=${final}`, "_blank");
+    const url = `/api/runs/${activeRunId}/export?final=${final}`;
+    try {
+      const response = await fetch(url);
+      if (!response.ok) {
+        let detail = `Export failed (${response.status})`;
+        try {
+          const body = await response.json();
+          if (typeof body?.detail === "string") detail = body.detail;
+        } catch {
+          /* ignore */
+        }
+        setNotice(detail);
+        return;
+      }
+      const blob = await response.blob();
+      const disposition = response.headers.get("Content-Disposition") || "";
+      const match = /filename="?([^"]+)"?/i.exec(disposition);
+      const filename =
+        match?.[1] ||
+        (final ? "Claim1_chart_final.docx" : "Claim1_chart_draft.docx");
+      const objectUrl = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = objectUrl;
+      anchor.download = filename;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(objectUrl);
+      setNotice(
+        final
+          ? "Downloaded REVIEWED FINAL claim chart (.docx)."
+          : "Downloaded DRAFT claim chart (.docx)."
+      );
+    } catch (error) {
+      setNotice((error as Error).message || "Export failed");
+    }
   };
 
   const openReview = (args: { runId: string; rowId?: string }) => {
@@ -271,11 +318,63 @@ export default function App() {
 
   const projectName = setup?.project.name || "US10063856B2";
 
+  const workflowGates = useMemo(
+    () => computeWorkflowGates(setup, runs, chart),
+    [setup, runs, chart]
+  );
+  const activeWorkflowStep = toWorkflowStep(screen);
+
+  const goWorkflowStep = useCallback(
+    (step: WorkflowStepId) => {
+      if (!workflowGates[step].unlocked) {
+        setNotice(workflowGates[step].lockReason || "This step is locked.");
+        return;
+      }
+      if (step === "setup") {
+        if (selectionRun) {
+          const params = new URLSearchParams({
+            project: PROJECT_ID,
+            run: selectionRun.id,
+            view: "setup"
+          });
+          window.history.replaceState({}, "", `/?${params.toString()}`);
+        }
+        setScreen("setup");
+        return;
+      }
+      if (step === "charts") {
+        setReviewMode(false);
+        const preferred =
+          runs.find((run) =>
+            ["mapping", "reviewing", "searching", "decomposing", "queued"].includes(
+              run.status
+            )
+          ) ||
+          runs.find((run) => run.id === setup?.project.active_run_id) ||
+          runs.find((run) => run.status === "analyst_review") ||
+          runs.find((run) => run.status === "complete");
+        if (preferred) {
+          setActiveRunId(preferred.id);
+          const params = new URLSearchParams({
+            project: PROJECT_ID,
+            run: preferred.id,
+            view: "charts"
+          });
+          window.history.replaceState({}, "", `/?${params.toString()}`);
+        }
+        setScreen("charts");
+        return;
+      }
+      setScreen("sep_report");
+    },
+    [workflowGates, selectionRun, runs, setup?.project.active_run_id]
+  );
+
   return (
     <div className={`app-shell ${navCollapsed ? "nav-collapsed" : ""}`}>
       <nav className="nav" aria-label="Primary">
         <div className="nav-top">
-          <p className="wordmark">{navCollapsed ? "c" : "clause"}</p>
+          <p className="wordmark">{navCollapsed ? "LN" : "LexNorm"}</p>
           <button
             type="button"
             className="nav-collapse-btn"
@@ -287,82 +386,92 @@ export default function App() {
         </div>
         {!navCollapsed ? (
           <button className="workspace-chip" type="button">
-            {setup?.project.workspace_label || "Lumenci assessment"}
+            {setup?.project.workspace_label || "LexNorm"}
           </button>
         ) : null}
         <div className="nav-list">
           <button
-            className={`nav-item ${screen === "dashboard" ? "active" : ""}`}
-            onClick={() => setScreen("dashboard")}
-            title="Dashboard"
-          >
-            <LayoutDashboard size={16} />
-            {!navCollapsed ? "Dashboard" : null}
-          </button>
-          <button
-            className={`nav-item ${screen === "setup" ? "active" : ""}`}
-            onClick={() => {
-              if (selectionRun) {
-                const params = new URLSearchParams({
-                  project: PROJECT_ID,
-                  run: selectionRun.id,
-                  view: "setup"
-                });
-                window.history.replaceState({}, "", `/?${params.toString()}`);
-              }
-              setScreen("setup");
-            }}
-            title="Setup"
+            className={`nav-item ${screen === "setup" ? "active" : ""} ${
+              !workflowGates.setup.unlocked ? "is-locked" : ""
+            }`}
+            onClick={() => goWorkflowStep("setup")}
+            disabled={!workflowGates.setup.unlocked}
+            title="Setup — patent, claims, and target standard"
           >
             <Layers3 size={16} />
             {!navCollapsed ? "Setup" : null}
           </button>
           <button
-            className={`nav-item ${screen === "charts" ? "active" : ""}`}
-            onClick={() => {
-              setReviewMode(false);
-              const preferred =
-                runs.find((run) =>
-                  ["mapping", "reviewing", "searching", "decomposing", "queued"].includes(
-                    run.status
-                  )
-                ) ||
-                runs.find((run) => run.id === setup?.project.active_run_id) ||
-                runs.find((run) => run.status === "analyst_review") ||
-                runs.find((run) => run.status === "complete");
-              if (preferred) {
-                setActiveRunId(preferred.id);
-                const params = new URLSearchParams({
-                  project: PROJECT_ID,
-                  run: preferred.id,
-                  view: "charts"
-                });
-                window.history.replaceState({}, "", `/?${params.toString()}`);
-              }
-              setScreen("charts");
-            }}
-            title="Claim charts"
+            className={`nav-item ${screen === "charts" ? "active" : ""} ${
+              !workflowGates.charts.unlocked ? "is-locked" : ""
+            }`}
+            onClick={() => goWorkflowStep("charts")}
+            disabled={!workflowGates.charts.unlocked}
+            title={
+              workflowGates.charts.unlocked
+                ? "Claim charts"
+                : workflowGates.charts.lockReason
+            }
           >
             <FileSpreadsheet size={16} />
             {!navCollapsed ? "Claim charts" : null}
           </button>
           <button
-            className={`nav-item ${screen === "conclusion" ? "active" : ""}`}
-            onClick={() => setScreen("conclusion")}
-            title="Conclusion"
+            className={`nav-item ${
+              screen === "sep_report" || screen === "conclusion" ? "active" : ""
+            } ${!workflowGates.sep_report.unlocked ? "is-locked" : ""}`}
+            onClick={() => goWorkflowStep("sep_report")}
+            disabled={!workflowGates.sep_report.unlocked}
+            title={
+              workflowGates.sep_report.unlocked
+                ? "SEP Report — download the created claim chart report"
+                : workflowGates.sep_report.lockReason
+            }
           >
             <ScrollText size={16} />
-            {!navCollapsed ? "Conclusion" : null}
-          </button>
-          <button
-            className={`nav-item ${screen === "evaluations" ? "active" : ""}`}
-            onClick={() => setScreen("evaluations")}
-            title="Evaluations"
-          >
-            <ClipboardCheck size={16} />
-            {!navCollapsed ? "Evaluations" : null}
+            {!navCollapsed ? "SEP Report" : null}
           </button>
         </div>
+
+        <div className="nav-section-divider" role="presentation">
+          {!navCollapsed ? (
+            <span className="nav-section-label">Internal only</span>
+          ) : (
+            <span className="nav-section-rule" aria-hidden />
+          )}
+        </div>
+
+        <div className="nav-list nav-list-internal" aria-label="Internal tools">
+          <button
+            className={`nav-item ${
+              screen === "evaluations" || screen === "evaluations_legacy" ? "active" : ""
+            }`}
+            onClick={() => setScreen("evaluations")}
+            title="Evaluation — internal quality scoring only (not attorney-facing)"
+          >
+            <ClipboardCheck size={16} />
+            {!navCollapsed ? (
+              <span className="nav-item-stack">
+                <span>Evaluation</span>
+                <span className="nav-item-meta">Internal</span>
+              </span>
+            ) : null}
+          </button>
+          <button
+            className={`nav-item ${screen === "observability" ? "active" : ""}`}
+            onClick={() => setScreen("observability")}
+            title="Observability — internal execution traces only (not attorney-facing)"
+          >
+            <Activity size={16} />
+            {!navCollapsed ? (
+              <span className="nav-item-stack">
+                <span>Observability</span>
+                <span className="nav-item-meta">Internal</span>
+              </span>
+            ) : null}
+          </button>
+        </div>
+
         <div className="nav-spacer" />
         <button
           className={`nav-item ${screen === "settings" ? "active" : ""}`}
@@ -402,23 +511,26 @@ export default function App() {
         ) : null}
 
         <div className="content">
+          {setup && isWorkflowScreen(screen) && activeWorkflowStep ? (
+            <WorkflowStepper
+              activeStep={activeWorkflowStep}
+              gates={workflowGates}
+              onStepChange={goWorkflowStep}
+              showNavButtons={false}
+            />
+          ) : null}
           {!setup ? (
             <div className="empty">Loading workspace…</div>
           ) : screen === "dashboard" ? (
-            <DashboardScreen
-              projectId={PROJECT_ID}
-              onNotice={setNotice}
-              onOpenReview={openReview}
-              onOpenCharts={(runId) => {
-                setActiveRunId(runId);
-                setReviewMode(false);
-                setScreen("charts");
-              }}
-              onOpenConclusion={(runId) => {
-                setActiveRunId(runId);
-                setScreen("conclusion");
-              }}
-            />
+            // Dashboard is WIP — keep Screen type & DashboardScreen.tsx for later.
+            <div className="empty">
+              Dashboard is temporarily hidden while we continue work. Use Setup to continue.
+              <div style={{ marginTop: 12 }}>
+                <button type="button" className="primary" onClick={() => setScreen("setup")}>
+                  Go to Setup
+                </button>
+              </div>
+            </div>
           ) : screen === "setup" ? (
             <SetupScreen
               setup={setup}
@@ -431,6 +543,8 @@ export default function App() {
               onStart={() => startAnalysis()}
               onConfirmTargets={confirmTargets}
               selectionStatus={selectionStatusForSetup}
+              onRefresh={refresh}
+              onNotice={setNotice}
             />
           ) : screen === "settings" ? (
             <SettingsScreen
@@ -451,17 +565,35 @@ export default function App() {
               reviewMode={reviewMode}
               onFocusRowConsumed={() => setFocusRowId(null)}
             />
-          ) : screen === "conclusion" ? (
-            <ConclusionScreen
+          ) : screen === "sep_report" || screen === "conclusion" ? (
+            <SepReportScreen
               setup={setup}
               runs={runs}
               chart={chart}
-              onOpenCharts={() => setScreen("charts")}
+              onOpenCharts={(rowId) => {
+                if (rowId) setFocusRowId(rowId);
+                setScreen("charts");
+              }}
               onExport={exportDoc}
               onNotice={setNotice}
             />
-          ) : (
+          ) : screen === "observability" ? (
+            <ObservabilityScreen
+              runs={runs}
+              activeRunId={activeRunId}
+              onSelectRun={setActiveRunId}
+              onNotice={setNotice}
+            />
+          ) : screen === "evaluations_legacy" ? (
             <EvaluationsScreen
+              setup={setup}
+              runs={runs}
+              activeRunId={activeRunId}
+              onSelectRun={setActiveRunId}
+              onNotice={setNotice}
+            />
+          ) : (
+            <EvaluationQualityScreen
               setup={setup}
               runs={runs}
               activeRunId={activeRunId}

@@ -1,9 +1,10 @@
 # Eval failure modes + production plan
 
 Chart run scored: `a4d4d0c4-ba50-4dc7-a6b5-8e23a0f2116b` (H.265 V10, Claim 1)  
-Gold pack: `evaluation_data/Expected_Claim1_Reference_Pack` (`expected-claim1-v1`)
+Gold pack: `evaluation_data/Expected_Claim1_Reference_Pack` (`expected-claim1-v1`)  
+Locked Deliverable 4 eval: `32f1416f` → `submission/Deliverable4_Evaluation.xlsx`
 
-## What was broken
+## What was broken (earlier rescored run `b302b124`)
 
 | Criterion | Symptom | Root cause |
 |---|---|---|
@@ -16,28 +17,43 @@ C01–C03 (edition / quote / page) were already honest Passes on the live H.265 
 
 1. **C04** — Auto-**Pass** when every evidence block has `screenshot_url`; **Fail** only when missing/unavailable.
 2. **C05** — Grader prompt prefers Pass/Fail; deterministic fallback Passes clear Partial-map rationales that state support + gaps when the LLM stays on Needs review/Error.
+3. **C06 fine-split policy** — When gold is Partial map and aligned generated labels include ≥1 Partial with **no** Full-map overclaim, grade **Pass** (No-map sub-parts allowed). Pure No-map vs expected Partial still Fails. Locked workbook scores remain 0/3; new Evaluation runs use the policy.
 
-## Rescore (eval `b302b124-5bc7-4ae5-b3b8-f57fbbfd9fec`)
+## Locked pack scorecard (eval `32f1416f`)
 
 | Criterion | Result |
 |---|---|
 | C01 Right standard | **3/3 Pass** |
 | C02 Quote verbatim | **3/3 Pass** |
 | C03 Source/page | **3/3 Pass** |
-| C04 Screenshot | **3/3 Pass** (was 0/3 Needs review) |
-| C05 Rationale | **3/3 Pass** (was 0/3 Needs review) |
-| C06 Label | **0/3 Fail** after alignment confirm — gold Partial rows align to mixed Partial+No-map generated splits |
+| C04 Screenshot | **3/3 Pass** |
+| C05 Rationale | **3/3 Pass** |
+| C06 Label | **0/3 Fail** (pre–fine-split-policy score on mixed Partial+No-map bundles) |
+
+Attorney-ready: **No** — Conditional Go; expert review required.
 
 ## Top 3 remaining failure modes
 
-1. **Claim decomposition mismatch** — Gold pack has 3 Claim-1 elements; generator often emits 8 (`1[a]`–`1[h]`). Alignment is many-to-one; No-map sub-elements inside a Partial gold row fail C06.
+1. **Claim decomposition mismatch** — Gold pack has 3 Claim-1 elements; generator may emit 8 (`1[a]`–`1[h]`). Fine-split scoring softens C06 for Partial+No-map; constraining the splitter toward gold’s 3-part structure is still preferred for attorney reviewability.
 2. **Cite drift vs gold crops** — Generated 1[a] may cite overview/CABAC pages instead of gold E01/E02 definition pages. Quotes verify on-page (C02/C03) but do not match attorney reference crops.
-3. **C06 label agreement** — Needs confirmed alignments; fails when any aligned generated label disagrees with gold Partial policy.
+3. **Encoder/decoder overclaim** — Decoder-only equations used to support encoder “set chroma QP”; keep Full-map guards + human review.
 
 ## Production plan (next)
 
-1. Constrain Claim-1 split toward gold’s 3-part limitation structure (or score aggregated alignments).
+1. Prefer Claim-1 split toward gold’s 3-part limitation structure (fine-split Pass is a safety net, not a substitute).
 2. Bias retrieval toward gold-like clause/page priors for chroma QP (without hardcoding the winner standard).
-3. Require Partial rationales to emit structured `missing_requirements` (already partially present) and grade against that schema.
+3. Require Partial rationales to emit structured `missing_requirements` and grade against that schema.
 4. Keep C04 presence auto-pass; add optional vision adjudicator later for crop-vs-quote mismatch (Fail only on mismatch).
-5. Export eval workbook + this note with every submission package.
+5. Export eval workbook + this note with every submission package; re-run Evaluation after prompt/retrieval changes.
+
+## How to refresh artifacts
+
+```bash
+# From repo root, with API running and a completed H.265 chart run:
+# 1) Evaluation UI → reference expected-claim1-v1 + generated chart → Run
+# 2) Download D4 workbook from Evaluation results
+# Or via API:
+# POST /api/evaluation-runs/from-sources  then  GET /api/evaluation-runs/{id}/deliverable4.xlsx
+```
+
+Copy refreshed files into `submission/` only when scores are intentional (do not silently overwrite the locked Conditional Go pack without updating `Deliverable4_SUMMARY.md`).

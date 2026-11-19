@@ -2,8 +2,11 @@ export type Screen =
   | "dashboard"
   | "setup"
   | "charts"
-  | "conclusion"
+  | "sep_report"
+  | "conclusion" // legacy alias → sep_report
   | "evaluations"
+  | "evaluations_legacy"
+  | "observability"
   | "settings";
 
 export type Provider = {
@@ -130,6 +133,14 @@ export type RunSummary = {
   target_document_id?: string;
   selection_only?: boolean;
   has_target_decision?: boolean;
+  target_decision?: {
+    target_document_id?: string;
+    candidates?: Array<{
+      document_id: string;
+      disposition: string;
+      rationale?: string;
+    }>;
+  } | null;
 };
 
 export type EvidenceBlock = {

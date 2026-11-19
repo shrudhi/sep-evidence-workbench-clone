@@ -3,7 +3,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Literal
 
-from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Query, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -12,7 +12,7 @@ from .config import get_settings
 from .database import connect, init_db, transaction, utcnow
 from .exporter import export_docx, render_page_screenshot
 from .ingest import load_manifest, register_manifest
-from .model_provider import OpenAICompatibleProvider
+from .model_provider import OpenAICompatibleProvider, ProviderUnavailable
 from .projects import (
     DEFAULT_PROJECT_ID,
     build_run_snapshot,
@@ -79,20 +79,38 @@ from .evaluation import (
     create_evaluation_run,
     empty_not_run_template,
     ensure_evaluation_schema,
+    evaluation_history,
     export_evaluation_bundle,
+    export_evaluation_xlsx,
     get_dataset,
     get_evaluation_run,
     get_reference_file,
     import_default_reference_pack,
+    list_chart_snapshots,
     list_datasets,
     list_evaluation_runs,
+    list_failure_actions,
     list_reference_files,
     remove_reference_file,
+    update_failure_action,
+    upload_reference_dataset,
     upload_reference_file,
 )
+from .eval_upload import (
+    create_evaluation_run_from_sources,
+    create_evaluation_run_from_uploads,
+    preview_reference_dataset,
+)
+from .eval_d4_export import (
+    export_agent_chart_xlsx,
+    write_deliverable4_workbook,
+    write_h265_claim_chart_evaluation_xlsx,
+)
+from .matter_upload import upload_patent_pdf, upload_standard_pdf
 from .ai_review import apply_recommended_fix, ai_review_from_checks, review_revision
 from .chart_schema import enrich_mapping_tags, ensure_chart_schema
 from .ops_schema import ensure_ops_schema
+from .observability import build_observability_report
 from .product_evidence import (
     delete_accused_product,
     delete_product_evidence,
@@ -116,7 +134,7 @@ from .workflow import (
 
 settings = get_settings()
 app = FastAPI(
-    title="Clause API",
+    title="LexNorm API",
     version="0.2.0",
     description="Patent-to-standard evidence workbench",
 )
@@ -318,6 +336,55 @@ def documents() -> list[dict[str, Any]]:
                 """
             )
         ]
+
+
+@app.post("/api/projects/{project_id}/patent-upload")
+async def patent_upload(
+    project_id: str,
+    file: UploadFile = File(...),
+) -> dict[str, Any]:
+    """Accept a patent PDF. Matching assessment SHA-256 binds prepared claims; others are retained honestly."""
+    try:
+        get_project(project_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="Empty upload")
+    if not (file.filename or "").lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="PDF required")
+    try:
+        result = upload_patent_pdf(
+            content=content,
+            filename=file.filename or "patent.pdf",
+            project_id=project_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return result
+
+
+@app.post("/api/documents/standard-upload")
+async def standard_upload(
+    file: UploadFile = File(...),
+    family: str | None = Form(default=None),
+    edition: str | None = Form(default=None),
+) -> dict[str, Any]:
+    """Accept a standard PDF. Matching SHA-256 reuses indexed docs; others register as pending."""
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="Empty upload")
+    if not (file.filename or "").lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="PDF required")
+    try:
+        return upload_standard_pdf(
+            content=content,
+            filename=file.filename or "standard.pdf",
+            family=family,
+            edition=edition,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.get("/api/projects/{project_id}")
@@ -564,6 +631,18 @@ def run_events(run_id: str) -> list[dict[str, Any]]:
 @app.get("/api/runs/{run_id}/trace")
 def run_trace(run_id: str) -> dict[str, Any]:
     return {"run": get_run(run_id), "events": run_events(run_id), "chart": chart(run_id)}
+
+
+@app.get("/api/runs/{run_id}/observability")
+def run_observability(run_id: str) -> dict[str, Any]:
+    """In-app observability: timeline, measured usage/latency, errors, ops audit.
+
+    Independent of Evaluation scoring.
+    """
+    try:
+        return build_observability_report(run_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Unknown run") from exc
 
 
 @app.post("/api/runs/{run_id}/retry", status_code=202)
@@ -1745,6 +1824,8 @@ def run_send_updated(run_id: str) -> dict[str, Any]:
 class EvaluationCreateRequest(BaseModel):
     run_id: str = Field(min_length=3, max_length=100)
     dataset_id: str = Field(default="expected-claim1-v1", min_length=3, max_length=100)
+    snapshot_id: str | None = Field(default=None, max_length=100)
+    output_stage: str = Field(default="latest_chart", max_length=80)
 
 
 class AlignmentConfirmRequest(BaseModel):
@@ -1755,6 +1836,10 @@ class AdjudicationRequest(BaseModel):
     status: Literal["Pass", "Fail", "Needs review", "Not applicable"]
     reason: str = Field(min_length=3, max_length=3000)
     adjudicator: str = Field(default="Analyst", max_length=200)
+
+
+class FailureActionUpdateRequest(BaseModel):
+    status: Literal["Open", "In Progress", "Fixed", "Verified", "Regressed"]
 
 
 @app.post("/api/evaluation-datasets/import")
@@ -1788,17 +1873,189 @@ def evaluation_not_run_template() -> dict[str, Any]:
 @app.post("/api/evaluation-runs", status_code=201)
 def start_evaluation(request: EvaluationCreateRequest) -> dict[str, Any]:
     try:
-        return create_evaluation_run(
+        detail = create_evaluation_run(
             run_id=request.run_id,
             dataset_id=request.dataset_id,
-            output_stage="latest_chart",
+            output_stage=request.output_stage,
+            snapshot_id=request.snapshot_id,
         )
+        # Always materialize D4 workbook alongside legacy export
+        try:
+            write_deliverable4_workbook(detail["id"])
+        except Exception:  # noqa: BLE001
+            pass
+        return detail
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/api/evaluation-runs/from-uploads", status_code=201)
+async def start_evaluation_from_uploads(
+    reference: UploadFile = File(..., description="Labelled expected chart (JSON/CSV/XLSX/PDF/DOCX)"),
+    output: UploadFile = File(..., description="Agent claim-chart output (JSON/CSV/XLSX/PDF/DOCX)"),
+) -> dict[str, Any]:
+    """Dual-upload start: reference + agent output → ingest → score → D4 spreadsheet."""
+    try:
+        reference_bytes = await reference.read()
+        output_bytes = await output.read()
+        if not reference_bytes:
+            raise HTTPException(status_code=422, detail="Reference file is empty")
+        if not output_bytes:
+            raise HTTPException(status_code=422, detail="Agent output file is empty")
+        return create_evaluation_run_from_uploads(
+            reference_filename=reference.filename or "reference.bin",
+            reference_content=reference_bytes,
+            reference_content_type=reference.content_type,
+            output_filename=output.filename or "output.bin",
+            output_content=output_bytes,
+            output_content_type=output.content_type,
+            auto_confirm_alignments=True,
+        )
+    except HTTPException:
+        raise
+    except ProviderUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/api/evaluation-runs/from-sources", status_code=201)
+async def start_evaluation_from_sources(
+    reference_dataset_id: str | None = Form(default=None),
+    agent_run_id: str | None = Form(default=None),
+    snapshot_id: str | None = Form(default=None),
+    reference: UploadFile | None = File(default=None),
+    output: UploadFile | None = File(default=None),
+) -> dict[str, Any]:
+    """Start eval from existing reference dataset and/or new uploads / generated chart.
+
+    Provide either ``reference_dataset_id`` or ``reference`` file.
+    Provide either ``agent_run_id`` (exports + stores agent XLSX) or ``output`` file.
+    """
+    try:
+        # Empty file parts from browsers can arrive as UploadFile with empty filename
+        if reference is not None and not (reference.filename or "").strip():
+            reference = None
+        if output is not None and not (output.filename or "").strip():
+            output = None
+        reference_bytes = await reference.read() if reference is not None else None
+        output_bytes = await output.read() if output is not None else None
+        if reference is not None and not reference_bytes:
+            raise HTTPException(status_code=422, detail="Reference file is empty")
+        if output is not None and not output_bytes:
+            raise HTTPException(status_code=422, detail="Agent output file is empty")
+        return create_evaluation_run_from_sources(
+            reference_dataset_id=(reference_dataset_id or "").strip() or None,
+            reference_filename=(reference.filename if reference else None),
+            reference_content=reference_bytes,
+            reference_content_type=(reference.content_type if reference else None),
+            output_filename=(output.filename if output else None),
+            output_content=output_bytes,
+            output_content_type=(output.content_type if output else None),
+            agent_run_id=(agent_run_id or "").strip() or None,
+            snapshot_id=(snapshot_id or "").strip() or None,
+            auto_confirm_alignments=True,
+        )
+    except HTTPException:
+        raise
+    except ProviderUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.get("/api/evaluation-datasets/{dataset_id}/preview")
+def evaluation_dataset_preview(dataset_id: str) -> dict[str, Any]:
+    try:
+        return preview_reference_dataset(dataset_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get("/api/runs/{run_id}/agent-chart.xlsx")
+def export_run_agent_chart_xlsx(
+    run_id: str, snapshot_id: str | None = Query(default=None)
+):
+    """Export generated chart as sheet-2b XLSX, store under evaluation_data/uploads, download."""
+    try:
+        meta = export_agent_chart_xlsx(run_id, snapshot_id=snapshot_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    path = Path(meta["path"])
+    return FileResponse(
+        path,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        filename=meta["filename"],
+        headers={"X-Agent-Chart-Export": json.dumps({k: meta[k] for k in ("path", "snapshot_id", "row_count") if k in meta})},
+    )
+
+
+@app.get("/api/runs/{run_id}/chart-snapshots")
+def run_chart_snapshots(run_id: str, limit: int = Query(default=20, ge=1, le=100)) -> list[dict[str, Any]]:
+    return list_chart_snapshots(run_id, limit=limit)
+
+
+@app.post("/api/evaluation-datasets/upload")
+async def evaluation_dataset_upload(file: UploadFile = File(...)) -> dict[str, Any]:
+    try:
+        content = await file.read()
+        if not content:
+            raise HTTPException(status_code=422, detail="Empty file")
+        return upload_reference_dataset(
+            filename=file.filename or "reference.json",
+            content=content,
+            content_type=file.content_type,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.get("/api/evaluation-runs/history")
+def evaluation_runs_history(
+    dataset_id: str | None = None,
+    run_id: str | None = None,
+    limit: int = Query(default=30, ge=1, le=100),
+) -> list[dict[str, Any]]:
+    return evaluation_history(dataset_id=dataset_id, run_id=run_id, limit=limit)
+
+
+@app.get("/api/evaluation-runs/{evaluation_id}/failure-actions")
+def evaluation_failure_actions(evaluation_id: str) -> list[dict[str, Any]]:
+    try:
+        get_evaluation_run(evaluation_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return list_failure_actions(evaluation_id)
+
+
+@app.patch("/api/evaluation-failure-actions/{action_id}")
+def evaluation_failure_action_update(
+    action_id: str, request: FailureActionUpdateRequest
+) -> dict[str, Any]:
+    try:
+        return update_failure_action(action_id, status=request.status)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @app.get("/api/evaluation-datasets/{dataset_id}/files")
@@ -1925,16 +2182,42 @@ def evaluation_adjudicate(result_id: str, request: AdjudicationRequest) -> dict[
 
 
 @app.get("/api/evaluation-runs/{evaluation_id}/export")
-def evaluation_export(evaluation_id: str):
+def evaluation_export(
+    evaluation_id: str,
+    format: str = Query(default="xlsx"),
+    layout: str = Query(default="d4", description="d4 = Deliverable-4 sheets; legacy = 8-sheet report"),
+):
     try:
-        path = export_evaluation_bundle(evaluation_id)
+        if format == "xlsx":
+            if layout == "legacy":
+                path = export_evaluation_xlsx(evaluation_id)
+            else:
+                path = write_deliverable4_workbook(evaluation_id)
+            media = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        else:
+            path = export_evaluation_bundle(evaluation_id)
+            media = "application/zip"
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     return FileResponse(
         path,
-        media_type="application/zip",
+        media_type=media,
+        filename=path.name,
+    )
+
+
+@app.get("/api/evaluation-dashboard/h265/export.xlsx")
+def export_h265_claim_chart_evaluation_sheet():
+    """Download the locked H.265 Claim Chart Evaluation spreadsheet shown on the dashboard."""
+    try:
+        path = write_h265_claim_chart_evaluation_xlsx()
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return FileResponse(
+        path,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         filename=path.name,
     )
 

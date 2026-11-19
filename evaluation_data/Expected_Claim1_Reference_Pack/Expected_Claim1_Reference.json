@@ -65,8 +65,20 @@
     {
       "id": "C06",
       "key": "label_correct",
-      "name": "Full / Partial / No correct",
+      "name": "Mapping label accuracy",
       "pass_condition": "Label follows the agreed policy for the complete aligned element"
+    },
+    {
+      "id": "C07",
+      "key": "claim_coverage",
+      "name": "Claim coverage",
+      "pass_condition": "Every reference claim element is aligned to generated chart rows with matching claim text"
+    },
+    {
+      "id": "C08",
+      "key": "normative_compliance",
+      "name": "Normative/optional compliance",
+      "pass_condition": "Mandatory gaps and optional/informative clauses are not over-claimed as Full map"
     }
   ],
   "rows": [

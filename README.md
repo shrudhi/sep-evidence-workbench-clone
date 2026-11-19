@@ -1,4 +1,4 @@
-# SEP Evidence Workbench
+# LexNorm — SEP Evidence Workbench
 
 A runnable, source-grounded prototype for comparing patent claim 1 against every
 indexed technical standard, preserving evidence lineage, independently reviewing
@@ -34,9 +34,11 @@ confirms target(s) → Claim charts (3-col) → review + HITL → Word export + 
 
 ### Assessment docs
 
+- [Submission checklist + Loom script](docs/SUBMISSION.md)
 - [One-page PRD](docs/PRD.md)
 - [One-page user flow](docs/USER_FLOW.md) (happy path + two failure branches)
 - [Eval failure modes + production plan](docs/EVAL_FAILURE_MODES.md)
+- [Submission package](submission/README.md) (D4 workbook, chart DOCX, run trace)
 - Gold pack: `evaluation_data/Expected_Claim1_Reference_Pack/`
 
 ### Demo run (local)
@@ -100,16 +102,19 @@ docker run --rm -p 8000:8000 \
 The image precomputes the source index and local embeddings once. On first startup
 it seeds the persistent volume. SQLite uses WAL and the API runs one worker.
 
-## Add the pending H.265 source
+## Standards corpus (including H.265)
 
-1. Place the exact ITU-T H.265 V10 (07/2024) PDF at
-   `sources/T-REC-H.265-202407-I.pdf`.
-2. Compute its SHA-256 and place that value in the existing H.265 manifest entry.
-3. Change only that entry's status from `pending` to `available`.
-4. Run `.venv/bin/python -m backend.app.ingest`.
+All three assessment standards ship under `sources/` and are marked `available` in
+`sources/manifest.json`:
 
-The next run will select among all three indexed standards. No code or prompt
-change is required.
+- G.722.2 — `T-REC-G.722.2-200307-I.pdf`
+- TS 136 211 — `ts_136211v170200p.pdf`
+- H.265 V10 — `T-REC-H.265-202407-I.pdf`
+
+After placing or replacing a PDF, confirm the SHA-256 in the matching manifest
+entry, then run `.venv/bin/python -m backend.app.ingest` so the index stays in
+sync. Matter Setup can also upload a PDF: a SHA-256 match reuses an indexed
+document; otherwise the file is registered as `pending` until ingest.
 
 ## API highlights
 
@@ -139,10 +144,14 @@ as a failed trace event; live provider calls require the configuration above.
 
 ## Current limitations
 
-- H.265 V10 is not attached, so a compliant three-standard live selection cannot
-  be demonstrated yet.
-- This environment contains no provider credential; no live model call, model
-  usage, mapping result, cost, or accuracy metric is claimed.
+- Arbitrary patent PDFs are retained on upload but claim text is only charted
+  from prepared patent-input records (or an upload whose SHA-256 matches the
+  assessment patent). Invented claim parsing is intentionally not implemented.
+- Uploaded standards that do not match a known SHA-256 register as `pending`
+  until a full ingest/index pass; recommendation and mapping require indexed
+  candidates.
+- This environment may have no provider credential; without one, no live model
+  call, model usage, mapping result, cost, or accuracy metric is claimed.
 - Printed page labels and heading hierarchy are deterministic heuristics and may
   need analyst correction for unusual layouts. Equations are flagged for visual
   inspection.

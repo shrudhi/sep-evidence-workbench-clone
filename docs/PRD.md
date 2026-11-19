@@ -1,6 +1,6 @@
-# PRD — Agentic SEP Chart Builder (v1)
+# PRD — LexNorm SEP Chart Builder (v1)
 
-**Product:** Claim-1 SEP charting workbench for technical patent analysts  
+**Product:** LexNorm — Claim-1 SEP charting workbench for technical patent analysts  
 **Demo patent:** [US10063856B2](https://patents.google.com/patent/US10063856B2/en) (Sony chroma QP extension for HEVC)  
 **Standards in corpus:** ITU-T G.722.2 · ITU-T H.265 V10 · 3GPP TS 36.211  
 **Owner outcome:** Defensible draft chart with verifiable quotes/screenshots — not a legal essentiality opinion
@@ -30,7 +30,7 @@ Patsnap / Solve / GreyB / Hashi ship SEP mapping depth; IPlytics scores declarat
 
 ## V1 scope
 
-In: Claim 1 only; Path A select→confirm→3-col chart; review agent; challenge/accept/reject; Word export; run trace; evals vs labelled gold.  
+In: Claim 1 only; Path A select→confirm→3-col chart; Evidence/Judge/Notes inspector; review agent; challenge/accept/reject; SEP Report comparison + Word export; run trace; internal evals vs labelled gold.  
 Out: patent fetchers, auth, production infra, multi-claim portfolios, legal conclusions.
 
 ## Agent design & checkpoints

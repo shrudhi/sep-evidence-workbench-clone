@@ -1,22 +1,22 @@
-# User flow — Agentic SEP Chart Builder (one page)
+# User flow — LexNorm SEP chart builder (one page)
 
 Happy path for a technical patent analyst on US10063856B2 → H.265 V10 Claim 1, plus two failure branches.
 
 ```mermaid
 flowchart TD
-  start([Open Setup]) --> ingest[Confirm patent + 3 indexed standards]
-  ingest --> startRun[Start analysis]
-  startRun --> select[Selection agent: recommend / reject with rationales]
+  start([Open Matter Setup]) --> ingest[Confirm patent + 3 indexed standards]
+  ingest --> recommend[Recommend Standard]
+  recommend --> select[Selection agent: recommend / reject with rationales]
   select --> confirm{Analyst confirms target?}
   confirm -->|Yes: H.265| map[Mapping agent builds Claim-1 chart]
   confirm -->|No / change selection| select
   map --> chart[Claim charts: 3-col table]
-  chart --> review[AI Review: Passed / Correction / Incomplete / Ambiguous]
-  review --> hitl[Analyst: Apply fix / View Evidence / Ask Agent / Edit / Accept / Reject]
+  chart --> review[Inspector: Evidence / Judge / Notes]
+  review --> hitl[HITL: AI Review / Ask Agent / Edit / Accept / Reject]
   hitl -->|Challenge or Request Revision| remap[Remap revision with note]
   remap --> review
-  hitl -->|All decided| export[Word export + run trace]
-  export --> done([Conclusion / submit])
+  hitl -->|All decided| report[SEP Report: comparison + export]
+  report --> done([Submit / Loom])
 
   select -.->|F1| wrongStd[Failure 1: analyst rejects recommended standard]
   wrongStd --> alt[Confirm alternate or re-run selection]
@@ -29,13 +29,13 @@ flowchart TD
 
 ## Happy path (compressed)
 
-1. **Setup** — patent US10063856B2; standards G.722.2 / H.265 V10 / TS 36.211 indexed; Start analysis  
-2. **Target** — system recommends H.265, rejects audio + LTE with reasons; analyst confirms H.265  
+1. **Setup** — patent US10063856B2; standards G.722.2 / H.265 V10 / TS 36.211 indexed; Recommend Standard  
+2. **Target** — system recommends H.265, rejects audio + LTE with reasons; analyst confirms H.265 → Start Chart Preparation  
 3. **Chart** — each Claim-1 element gets Source · Quote · Screenshot and Full / Partial / No + rationale  
-4. **AI Review** — auto after map; four statuses; Correction rows offer one-click Apply recommended fix  
-5. **HITL** — Apply fix / View Evidence / Ask Agent / Edit / Request Revision / Rerun; then Accept/Reject  
-
-6. **Export** — draft Word anytime; final after all dispositions; download run trace (`ai_review_completed` events)  
+4. **Inspector** — Evidence (PDF), Judge (review agent / AI Review), Notes (persisted threads)  
+5. **HITL** — Apply fix / Ask Agent / Edit / Request Revision / Rerun; then **Accept / Reject** on every row  
+6. **SEP Report** — standard comparison, unresolved deep links, draft Word anytime; final after all dispositions; optional ZIP bundle  
+7. **Evaluation (internal)** — C01–C06 vs gold pack; no blended score; Conditional Go until expert sign-off  
 
 ## Failure branch 1 — Analyst rejects the recommended standard
 
@@ -58,5 +58,5 @@ flowchart TD
 | After | Analyst can |
 |---|---|
 | Selection | Confirm / change standards |
-| Chart + AI Review | View Evidence, Ask Agent, Edit, Request Revision, Rerun, Challenge, Accept, Reject |
-| Before final export | Resolve every included row disposition |
+| Chart + Judge | Evidence, Notes, Ask Agent, Edit, Request Revision, Rerun, Challenge, Accept, Reject |
+| SEP Report | Jump unresolved rows; export draft / final / bundle |
