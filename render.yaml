@@ -16,14 +16,14 @@ services:
       - key: MODEL_API_KEY
         sync: false
       - key: MODEL_API_BASE
-        value: https://generativelanguage.googleapis.com/v1beta/openai
+        value: https://api.openai.com/v1
       - key: MAPPER_MODEL
-        sync: false
+        value: gpt-4o-mini
       - key: REVIEWER_MODEL
-        sync: false
+        value: gpt-4o
       - key: MODEL_TIMEOUT_SECONDS
         value: "180"
       - key: MAX_RUN_BUDGET_USD
         value: "1.50"
       - key: APP_PUBLIC_BASE_URL
-        sync: false
+        value: https://lexnorm-workbench.onrender.com
