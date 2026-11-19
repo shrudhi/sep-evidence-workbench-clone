@@ -1,18 +1,18 @@
-# Deploy the full LexNorm workbench (API + UI + indexed sources).
-# Vercel cannot host this stack (long-running Python, SQLite, PDFs, embeddings).
+# LexNorm workbench — Docker web service for hiring-manager review.
+# Free plan: no persistent disk (disks require paid compute). On spin-down the
+# filesystem resets; docker-entrypoint re-seeds SQLite from the image.
 #
-# In Render: New → Blueprint → connect shrudhi/sep-evidence-workbench-clone
-# Then set MODEL_API_KEY / MAPPER_MODEL / REVIEWER_MODEL in the dashboard.
+# Render: New → Blueprint → this repo → Blueprint Name e.g. "lexnorm"
+# Then fill MODEL_API_KEY / MAPPER_MODEL / REVIEWER_MODEL when prompted.
 
 services:
   - type: web
     name: lexnorm-workbench
     runtime: docker
     plan: free
+    dockerfilePath: ./Dockerfile
     healthCheckPath: /api/health
     envVars:
-      - key: APP_PUBLIC_BASE_URL
-        sync: false
       - key: MODEL_API_KEY
         sync: false
       - key: MODEL_API_BASE
@@ -25,7 +25,5 @@ services:
         value: "180"
       - key: MAX_RUN_BUDGET_USD
         value: "1.50"
-    disk:
-      name: lexnorm-data
-      mountPath: /app/data
-      sizeGB: 1
+      - key: APP_PUBLIC_BASE_URL
+        sync: false
