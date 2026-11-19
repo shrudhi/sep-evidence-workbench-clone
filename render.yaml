@@ -1,0 +1,31 @@
+# Deploy the full LexNorm workbench (API + UI + indexed sources).
+# Vercel cannot host this stack (long-running Python, SQLite, PDFs, embeddings).
+#
+# In Render: New → Blueprint → connect shrudhi/sep-evidence-workbench-clone
+# Then set MODEL_API_KEY / MAPPER_MODEL / REVIEWER_MODEL in the dashboard.
+
+services:
+  - type: web
+    name: lexnorm-workbench
+    runtime: docker
+    plan: free
+    healthCheckPath: /api/health
+    envVars:
+      - key: APP_PUBLIC_BASE_URL
+        sync: false
+      - key: MODEL_API_KEY
+        sync: false
+      - key: MODEL_API_BASE
+        value: https://generativelanguage.googleapis.com/v1beta/openai
+      - key: MAPPER_MODEL
+        sync: false
+      - key: REVIEWER_MODEL
+        sync: false
+      - key: MODEL_TIMEOUT_SECONDS
+        value: "180"
+      - key: MAX_RUN_BUDGET_USD
+        value: "1.50"
+    disk:
+      name: lexnorm-data
+      mountPath: /app/data
+      sizeGB: 1
